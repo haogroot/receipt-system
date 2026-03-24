@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>旅行收據管家 | Travel Receipt Manager</title>
+    <meta name="description" content="旅行中拍照記錄發票收據，自動 OCR 辨識，即時追蹤花費與預算">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-spinner">
+            <div class="spinner-ring"></div>
+            <p class="loading-text">辨識中...</p>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- App Header -->
+    <header id="app-header" class="app-header">
+        <div class="header-content">
+            <h1 class="header-title">
+                <span class="header-icon">🧾</span>
+                <span id="header-text">旅行收據管家</span>
+            </h1>
+            <button id="trip-menu-btn" class="header-btn" title="旅程管理">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m-7-7H1m22 0h-4m-1.5-7.5L15 7m-6 6l-2.5 2.5m13-2.5L17 15M7 7L4.5 4.5"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main id="app-content" class="app-content">
+        <!-- Pages rendered by JS -->
+    </main>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav">
+        <button class="nav-btn active" data-page="dashboard">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            <span>首頁</span>
+        </button>
+        <button class="nav-btn" data-page="upload">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+            <span>上傳</span>
+        </button>
+        <button class="nav-btn" data-page="stats">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>統計</span>
+        </button>
+        <button class="nav-btn" data-page="history">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>歷史</span>
+        </button>
+    </nav>
+
+    <!-- Trip Modal -->
+    <div id="trip-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>旅程管理</h2>
+                <button class="modal-close" id="trip-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="trip-modal-body">
+                <!-- Trip list / form rendered by JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Receipt Detail Modal -->
+    <div id="receipt-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="receipt-modal-title">收據詳情</h2>
+                <button class="modal-close" id="receipt-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="receipt-modal-body">
+                <!-- Receipt detail rendered by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>

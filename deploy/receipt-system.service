@@ -1,0 +1,16 @@
+[Unit]
+Description=Receipt System - Gunicorn Flask App
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/receipt-system
+Environment="PATH=/opt/receipt-system/venv/bin"
+EnvironmentFile=/opt/receipt-system/.env
+ExecStart=/opt/receipt-system/venv/bin/gunicorn --workers 2 --bind unix:/opt/receipt-system/receipt-system.sock --timeout 120 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
