@@ -67,6 +67,7 @@ def upload_receipt():
             image_path=filename,
             raw_json=result,
             items=result.get("items", []),
+            credit_card_name=result.get("credit_card_name", ""),
         )
 
         result["id"] = receipt_id
@@ -126,6 +127,7 @@ def confirm_receipt():
         raw_json=data,
         items=data.get("items", []),
         note=data.get("note", ""),
+        credit_card_name=data.get("credit_card_name", ""),
     )
 
     return jsonify({"id": receipt_id, "message": "Receipt saved"}), 201
@@ -222,6 +224,7 @@ def create_trip_api():
         end_date=data.get("end_date"),
         budget_cash=data.get("budget_cash", 0),
         currency=data.get("currency", "JPY"),
+        credit_cards=data.get("credit_cards", ""),
     )
     return jsonify({"id": trip_id, "message": "Trip created"}), 201
 

@@ -215,7 +215,7 @@ async function renderDashboard(container) {
                             </div>
                             <div class="receipt-list-info">
                                 <div class="receipt-list-store">${r.store_name || '未知店家'}</div>
-                                <div class="receipt-list-date">${relativeDate(r.date)} · ${PAYMENT_LABELS[r.payment_method] || r.payment_method}</div>
+                                <div class="receipt-list-date">${relativeDate(r.date)} · ${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}</div>
                             </div>
                             <div class="receipt-list-amount">${formatAmount(r.total_amount)}</div>
                         </div>
@@ -300,18 +300,34 @@ async function handleFileUpload(files) {
 
         try {
             const result = await apiUpload('/api/receipts/upload', formData);
+            const trips = await api('/api/trips');
+            const activeTrip = trips.find(t => t.is_active) || null;
+            
             hideLoading();
             showToast('收據辨識成功！', 'success');
-            showReceiptPreview(result, file);
+            showReceiptPreview(result, file, activeTrip);
         } catch (err) {
             hideLoading();
         }
     }
 }
 
-function showReceiptPreview(data, file) {
+function showReceiptPreview(data, file, activeTrip) {
     const previewArea = document.getElementById('upload-preview-area');
     const imgUrl = file ? URL.createObjectURL(file) : (data.image_path ? `/uploads/${data.image_path}` : '');
+
+    let ccOptionsHtml = '';
+    if (activeTrip && activeTrip.credit_cards) {
+        const cards = activeTrip.credit_cards.split(',').map(c => c.trim()).filter(c => c);
+        if (cards.length > 0) {
+            ccOptionsHtml = `
+                <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${data.id}, this.value)">
+                    <option value="">-- 指定信用卡 --</option>
+                    ${cards.map(c => `<option value="${c}" ${data.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
+                </select>
+            `;
+        }
+    }
 
     previewArea.innerHTML = `
         <div class="receipt-preview">
@@ -336,10 +352,14 @@ function showReceiptPreview(data, file) {
                     <span>合計</span>
                     <span class="receipt-total-amount">${data.currency || ''} ${formatAmount(data.total_amount)}</span>
                 </div>
-                <div class="receipt-meta">
-                    <span class="receipt-tag payment">${PAYMENT_LABELS[data.payment_method] || data.payment_method}</span>
+                <div class="receipt-meta" style="flex-wrap:wrap">
+                    <span class="receipt-tag payment" style="cursor:pointer" onclick="changePaymentMethod(${data.id}, '${data.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[data.payment_method] || data.payment_method}</span>
                     <span class="receipt-tag category">${CATEGORY_EMOJI[data.category] || ''} ${data.category || '其他'}</span>
                     <span class="receipt-tag">${data.currency || 'JPY'}</span>
+                    ${data.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${data.credit_card_name}</span>` : ''}
+                </div>
+                <div style="padding:0 20px 12px">
+                   ${data.payment_method === 'credit_card' ? ccOptionsHtml : ''}
                 </div>
                 <div style="padding: 0 20px 12px">
                     <button class="btn btn-primary btn-full" onclick="navigateTo('upload')">繼續上傳</button>
@@ -552,7 +572,7 @@ async function renderHistory(container) {
                         </div>
                         <div class="receipt-list-info">
                             <div class="receipt-list-store">${r.store_name || '未知店家'}</div>
-                            <div class="receipt-list-date">${PAYMENT_LABELS[r.payment_method] || r.payment_method}</div>
+                            <div class="receipt-list-date">${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}</div>
                         </div>
                         <div class="receipt-list-amount">${formatAmount(r.total_amount)}</div>
                     </div>
@@ -578,7 +598,26 @@ async function showReceiptDetail(receiptId) {
     modal.classList.remove('hidden');
 
     try {
-        const r = await api(`/api/receipts/${receiptId}`);
+        const [r, trips] = await Promise.all([
+            api(`/api/receipts/${receiptId}`),
+            api('/api/trips')
+        ]);
+        const activeTrip = trips.find(t => t.is_active) || null;
+
+        let ccOptionsHtml = '';
+        if (activeTrip && activeTrip.credit_cards && r.payment_method === 'credit_card') {
+            const cards = activeTrip.credit_cards.split(',').map(c => c.trim()).filter(c => c);
+            if (cards.length > 0) {
+                ccOptionsHtml = `
+                    <div style="margin-bottom:12px">
+                        <select class="form-select" style="font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCardDetail(${r.id}, this.value)">
+                            <option value="">-- 指定信用卡 --</option>
+                            ${cards.map(c => `<option value="${c}" ${r.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
+                        </select>
+                    </div>
+                `;
+            }
+        }
 
         body.innerHTML = `
             ${r.image_path ? `<img src="/uploads/${r.image_path}" class="image-preview" alt="receipt">` : ''}
@@ -602,11 +641,13 @@ async function showReceiptDetail(receiptId) {
                     <span>合計</span>
                     <span class="receipt-total-amount">${r.currency || ''} ${formatAmount(r.total_amount)}</span>
                 </div>
-                <div class="receipt-meta" style="padding:0;margin-bottom:16px">
-                    <span class="receipt-tag payment">${PAYMENT_LABELS[r.payment_method] || r.payment_method}</span>
+                <div class="receipt-meta" style="padding:0;margin-bottom:8px;flex-wrap:wrap">
+                    <span class="receipt-tag payment" style="cursor:pointer" onclick="changePaymentMethod(${r.id}, '${r.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[r.payment_method] || r.payment_method}</span>
                     <span class="receipt-tag category">${CATEGORY_EMOJI[r.category] || ''} ${r.category || '其他'}</span>
                     <span class="receipt-tag">${r.currency || ''}</span>
+                    ${r.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${r.credit_card_name}</span>` : ''}
                 </div>
+                ${ccOptionsHtml}
                 ${r.note ? `<div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">📝 ${r.note}</div>` : ''}
                 <div style="display:flex;gap:8px">
                     <button class="btn btn-danger btn-sm" onclick="deleteReceiptConfirm(${r.id})">🗑️ 刪除</button>
@@ -631,6 +672,46 @@ async function deleteReceiptConfirm(receiptId) {
     }
 }
 
+window.updateReceiptCard = async function(receiptId, cardName) {
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ credit_card_name: cardName })
+        });
+        showToast('已更新信用卡', 'success');
+    } catch(e) {}
+};
+
+window.updateReceiptCardDetail = async function(receiptId, cardName) {
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ credit_card_name: cardName })
+        });
+        showToast('已更新信用卡', 'success');
+        showReceiptDetail(receiptId);
+    } catch(e) {}
+};
+
+window.changePaymentMethod = async function(receiptId, currentMethod) {
+    const newMethod = prompt("請輸入付款方式代碼 (credit_card, ic_card, cash):", currentMethod);
+    if (newMethod && ['credit_card', 'ic_card', 'cash'].includes(newMethod)) {
+        try {
+            await api(`/api/receipts/${receiptId}`, {
+                method: 'PUT',
+                body: JSON.stringify({ payment_method: newMethod })
+            });
+            showToast('付款方式已更新', 'success');
+            if (currentPage === 'dashboard') renderPage('dashboard');
+            else if (currentPage === 'history') renderPage('history');
+            const modal = document.getElementById('receipt-modal');
+            if (!modal.classList.contains('hidden')) {
+                showReceiptDetail(receiptId);
+            }
+        } catch(e) {}
+    }
+};
+
 
 // ═══════════════════════════════════════════════
 //  TRIP MANAGEMENT MODAL
@@ -649,7 +730,11 @@ async function openTripModal() {
                     <div class="trip-card ${t.is_active ? 'active' : ''}" onclick="setActiveTrip(${t.id}, ${!t.is_active})">
                         <div class="trip-card-name">${t.is_active ? '✅ ' : ''}${t.name}</div>
                         <div class="trip-card-dates">${t.start_date || ''} ~ ${t.end_date || ''}</div>
-                        ${t.budget_cash > 0 ? `<div class="trip-card-budget">現金預算: ${formatAmount(t.budget_cash)} ${t.currency}</div>` : ''}
+                        ${t.budget_cash > 0 ? `<div class="trip-card-budget" style="margin-bottom:8px">現金預算: ${formatAmount(t.budget_cash)} ${t.currency}</div>` : ''}
+                        <div style="font-size:0.85rem;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">
+                            <input type="text" id="edit-cards-${t.id}" value="${t.credit_cards || ''}" class="form-input" style="padding:4px 8px;font-size:0.8rem;background:rgba(255,255,255,0.05);color:white" placeholder="信用卡(逗號分隔)">
+                            <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="updateTripCards(${t.id})">儲存</button>
+                        </div>
                     </div>
                 `).join('') : '<div style="color:var(--text-muted);text-align:center;padding:20px">尚無旅程</div>'}
             </div>
@@ -686,6 +771,10 @@ async function openTripModal() {
                     </select>
                 </div>
             </div>
+            <div class="form-group">
+                <label class="form-label">設定信用卡 (選填，以逗號分隔)</label>
+                <input id="trip-credit-cards" class="form-input" placeholder="例：台新FlyGo, 國泰CUBE">
+            </div>
             <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
         `;
     } catch (err) {
@@ -697,6 +786,8 @@ async function createNewTrip() {
     const name = document.getElementById('trip-name').value.trim();
     if (!name) { showToast('請輸入旅程名稱', 'error'); return; }
 
+    const creditCards = document.getElementById('trip-credit-cards').value.trim();
+
     try {
         await api('/api/trips', {
             method: 'POST',
@@ -706,6 +797,7 @@ async function createNewTrip() {
                 end_date: document.getElementById('trip-end').value || null,
                 budget_cash: parseFloat(document.getElementById('trip-budget').value) || 0,
                 currency: document.getElementById('trip-currency').value,
+                credit_cards: creditCards,
             }),
         });
         showToast('旅程已建立！', 'success');
@@ -713,6 +805,20 @@ async function createNewTrip() {
     } catch (err) {
         // Toast shown
     }
+}
+
+window.updateTripCards = async function(tripId) {
+    const input = document.getElementById(`edit-cards-${tripId}`);
+    if(!input) return;
+    try {
+        await api(`/api/trips/${tripId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ credit_cards: input.value.trim() })
+        });
+        showToast('信用卡清單已更新', 'success');
+        openTripModal();
+        if (currentPage === 'dashboard') renderPage('dashboard');
+    } catch(e) {}
 }
 
 async function setActiveTrip(tripId, activate) {

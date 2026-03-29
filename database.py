@@ -25,7 +25,8 @@ def init_db():
             budget_cash REAL DEFAULT 0,
             currency TEXT DEFAULT 'JPY',
             is_active INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            credit_cards TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS receipts (
@@ -40,7 +41,8 @@ def init_db():
             image_path TEXT,
             raw_json TEXT,
             note TEXT DEFAULT '',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            credit_card_name TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS receipt_items (
@@ -53,18 +55,28 @@ def init_db():
         );
     """)
 
+    # Alter tables to add new columns if they don't exist yet (for existing dbs)
+    try:
+        cursor.execute("ALTER TABLE trips ADD COLUMN credit_cards TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE receipts ADD COLUMN credit_card_name TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
 
 # ─── Trip Operations ───
 
-def create_trip(name, start_date=None, end_date=None, budget_cash=0, currency="JPY"):
+def create_trip(name, start_date=None, end_date=None, budget_cash=0, currency="JPY", credit_cards=""):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO trips (name, start_date, end_date, budget_cash, currency) VALUES (?, ?, ?, ?, ?)",
-        (name, start_date, end_date, budget_cash, currency),
+        "INSERT INTO trips (name, start_date, end_date, budget_cash, currency, credit_cards) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, start_date, end_date, budget_cash, currency, credit_cards),
     )
     conn.commit()
     trip_id = cursor.lastrowid
@@ -88,7 +100,7 @@ def get_active_trip():
 
 def update_trip(trip_id, **kwargs):
     conn = get_db()
-    allowed = ["name", "start_date", "end_date", "budget_cash", "currency", "is_active"]
+    allowed = ["name", "start_date", "end_date", "budget_cash", "currency", "is_active", "credit_cards"]
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         conn.close()
@@ -104,15 +116,15 @@ def update_trip(trip_id, **kwargs):
 # ─── Receipt Operations ───
 
 def create_receipt(trip_id, store_name, date, total_amount, currency, payment_method,
-                   category, image_path, raw_json, items, note=""):
+                   category, image_path, raw_json, items, note="", credit_card_name=""):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         """INSERT INTO receipts
-           (trip_id, store_name, date, total_amount, currency, payment_method, category, image_path, raw_json, note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (trip_id, store_name, date, total_amount, currency, payment_method, category, image_path, raw_json, note, credit_card_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (trip_id, store_name, date, total_amount, currency, payment_method,
-         category, image_path, json.dumps(raw_json, ensure_ascii=False), note),
+         category, image_path, json.dumps(raw_json, ensure_ascii=False), note, credit_card_name),
     )
     receipt_id = cursor.lastrowid
 
@@ -174,7 +186,7 @@ def get_receipt(receipt_id):
 
 def update_receipt(receipt_id, **kwargs):
     conn = get_db()
-    allowed = ["store_name", "date", "total_amount", "currency", "payment_method", "category", "note", "trip_id"]
+    allowed = ["store_name", "date", "total_amount", "currency", "payment_method", "category", "note", "trip_id", "credit_card_name"]
     fields = {k: v for k, v in kwargs.items() if k in allowed}
 
     if fields:
@@ -246,7 +258,7 @@ def get_dashboard_data(trip_id=None):
         ).fetchone()["total"]
 
     # Recent receipts
-    q_recent = "SELECT id, store_name, date, total_amount, currency, payment_method, category FROM receipts"
+    q_recent = "SELECT id, store_name, date, total_amount, currency, payment_method, category, credit_card_name FROM receipts"
     params_recent = []
     if trip_id:
         q_recent += " WHERE trip_id = ?"
