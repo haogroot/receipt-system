@@ -243,6 +243,7 @@ def get_dashboard_data(trip_id=None):
     trip_total = 0
     trip_count = 0
     cash_spent = 0
+    cc_spent = []
     if trip_id:
         trip_total = conn.execute(
             "SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ?",
@@ -256,6 +257,12 @@ def get_dashboard_data(trip_id=None):
             "SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'cash'",
             (trip_id,)
         ).fetchone()["total"]
+
+        cc_spent_raw = conn.execute(
+            "SELECT credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != '' GROUP BY credit_card_name ORDER BY total DESC",
+            (trip_id,)
+        ).fetchall()
+        cc_spent = [dict(r) for r in cc_spent_raw]
 
     # Recent receipts
     q_recent = "SELECT id, store_name, date, total_amount, currency, payment_method, category, credit_card_name FROM receipts"
@@ -274,6 +281,7 @@ def get_dashboard_data(trip_id=None):
         "trip_total": trip_total,
         "trip_count": trip_count,
         "cash_spent": cash_spent,
+        "cc_spent": cc_spent,
         "recent_receipts": [dict(r) for r in recent],
     }
 

@@ -147,7 +147,7 @@ function renderPage(page) {
 //  DASHBOARD PAGE
 // ═══════════════════════════════════════════════
 async function renderDashboard(container) {
-    container.innerHTML = '<div class="page-enter"><div class="stat-grid" id="stat-cards"></div><div id="budget-section"></div><div id="recent-section"></div></div>';
+    container.innerHTML = '<div class="page-enter"><div class="stat-grid" id="stat-cards"></div><div id="budget-section"></div><div id="cc-section"></div><div id="recent-section"></div></div>';
 
     try {
         const data = await api('/api/dashboard');
@@ -200,6 +200,30 @@ async function renderDashboard(container) {
             `;
         } else {
             budgetSection.innerHTML = '';
+        }
+
+        // Credit card breakdown
+        const ccSection = document.getElementById('cc-section');
+        if (data.cc_spent && data.cc_spent.length > 0) {
+            ccSection.innerHTML = `
+                <div class="card" style="margin-bottom:20px">
+                    <div class="card-title">💳 信用卡累計花費</div>
+                    <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+                        ${data.cc_spent.map(c => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:8px">
+                                <span style="font-weight:500;color:var(--text-primary)">
+                                    ${c.credit_card_name}
+                                </span>
+                                <span style="font-size:1.1rem;font-weight:700;color:var(--text-primary)">
+                                    ${trip ? trip.currency : ''} ${formatAmount(c.total)}
+                                </span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        } else {
+            ccSection.innerHTML = '';
         }
 
         // Recent receipts
