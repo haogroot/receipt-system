@@ -205,20 +205,52 @@ async function renderDashboard(container) {
         // Credit card breakdown
         const ccSection = document.getElementById('cc-section');
         if (data.cc_spent && data.cc_spent.length > 0) {
+            // Parse card budgets config back to object
+            const cardBudgets = {};
+            if (trip && trip.credit_cards) {
+                trip.credit_cards.split(',').forEach(cstr => {
+                    const parts = cstr.split(':');
+                    if (parts.length >= 2) {
+                        const amt = parseFloat(parts[1]);
+                        if (!isNaN(amt)) cardBudgets[parts[0].trim()] = amt;
+                    }
+                });
+            }
+
             ccSection.innerHTML = `
                 <div class="card" style="margin-bottom:20px">
                     <div class="card-title">💳 信用卡累計花費</div>
-                    <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
-                        ${data.cc_spent.map(c => `
-                            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:8px">
-                                <span style="font-weight:500;color:var(--text-primary)">
-                                    ${c.credit_card_name}
-                                </span>
-                                <span style="font-size:1.1rem;font-weight:700;color:var(--text-primary)">
-                                    ${trip ? trip.currency : ''} ${formatAmount(c.total)}
-                                </span>
-                            </div>
-                        `).join('')}
+                    <div style="display:flex;flex-direction:column;gap:16px;margin-top:8px">
+                        ${data.cc_spent.map(c => {
+                            const budget = cardBudgets[c.credit_card_name] || 0;
+                            let budgetHtml = '';
+                            if (budget > 0) {
+                                const pct = Math.min((c.total / budget) * 100, 100);
+                                const barClass = c.total > budget ? 'danger' : pct > 90 ? 'warning' : '';
+                                budgetHtml = `
+                                    <div class="budget-bar-container" style="height:6px;margin-top:6px;background:rgba(255,255,255,0.05)">
+                                        <div class="budget-bar ${barClass}" style="width:${pct}%"></div>
+                                    </div>
+                                    <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-secondary);margin-top:4px">
+                                        <span>預算: ${formatAmount(budget)} ${trip ? trip.currency : ''}</span>
+                                        <span>${pct.toFixed(0)}%</span>
+                                    </div>
+                                `;
+                            }
+                            return `
+                                <div style="border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:8px">
+                                    <div style="display:flex;justify-content:space-between;align-items:center">
+                                        <span style="font-weight:500;color:var(--text-primary)">
+                                            ${c.credit_card_name}
+                                        </span>
+                                        <span style="font-size:1.1rem;font-weight:700;color:${budget > 0 && c.total > budget ? '#ef4444' : 'var(--text-primary)'}">
+                                            ${trip ? trip.currency : ''} ${formatAmount(c.total)}
+                                        </span>
+                                    </div>
+                                    ${budgetHtml}
+                                </div>
+                            `;
+                        }).join('')}
                     </div>
                 </div>
             `;
@@ -342,7 +374,7 @@ function showReceiptPreview(data, file, activeTrip) {
 
     let ccOptionsHtml = '';
     if (activeTrip && activeTrip.credit_cards) {
-        const cards = activeTrip.credit_cards.split(',').map(c => c.trim()).filter(c => c);
+        const cards = activeTrip.credit_cards.split(',').map(c => c.split(':')[0].trim()).filter(c => c);
         if (cards.length > 0) {
             ccOptionsHtml = `
                 <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${data.id}, this.value)">
@@ -630,7 +662,7 @@ async function showReceiptDetail(receiptId) {
 
         let ccOptionsHtml = '';
         if (activeTrip && activeTrip.credit_cards && r.payment_method === 'credit_card') {
-            const cards = activeTrip.credit_cards.split(',').map(c => c.trim()).filter(c => c);
+            const cards = activeTrip.credit_cards.split(',').map(c => c.split(':')[0].trim()).filter(c => c);
             if (cards.length > 0) {
                 ccOptionsHtml = `
                     <div style="margin-bottom:12px">
@@ -756,7 +788,7 @@ async function openTripModal() {
                         <div class="trip-card-dates">${t.start_date || ''} ~ ${t.end_date || ''}</div>
                         ${t.budget_cash > 0 ? `<div class="trip-card-budget" style="margin-bottom:8px">現金預算: ${formatAmount(t.budget_cash)} ${t.currency}</div>` : ''}
                         <div style="font-size:0.85rem;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">
-                            <input type="text" id="edit-cards-${t.id}" value="${t.credit_cards || ''}" class="form-input" style="padding:4px 8px;font-size:0.8rem;background:rgba(255,255,255,0.05);color:white" placeholder="信用卡(逗號分隔)">
+                            <input type="text" id="edit-cards-${t.id}" value="${t.credit_cards || ''}" class="form-input" style="padding:4px 8px;font-size:0.8rem;background:rgba(255,255,255,0.05);color:white" placeholder="卡片:預算 (例 國泰:1萬, 飛狗:5千)">
                             <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="updateTripCards(${t.id})">儲存</button>
                         </div>
                     </div>
@@ -796,8 +828,8 @@ async function openTripModal() {
                 </div>
             </div>
             <div class="form-group">
-                <label class="form-label">設定信用卡 (選填，以逗號分隔)</label>
-                <input id="trip-credit-cards" class="form-input" placeholder="例：台新FlyGo, 國泰CUBE">
+                <label class="form-label">設定信用卡與個別預算 (選填，冒號隔開卡名與金額)</label>
+                <input id="trip-credit-cards" class="form-input" placeholder="例：國泰CUBE:30000, 台新FlyGo:15000">
             </div>
             <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
         `;
