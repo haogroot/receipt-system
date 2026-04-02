@@ -16,11 +16,9 @@ const CATEGORY_COLORS = {
     '住宿': '#f59e0b', '娛樂': '#ec4899', '其他': '#6b7280',
 };
 
-const PAYMENT_LABELS = {
-    'credit_card': '💳 信用卡',
-    'ic_card': '🚃 交通IC卡',
-    'cash': '💴 現金',
-};
+let PAYMENT_LABELS = {};
+let PAYMENT_METHODS = [];
+let COMPANIONS = [];
 
 // ─── API Helpers ───
 async function api(url, options = {}) {
@@ -115,7 +113,7 @@ function navigateTo(page) {
     });
 
     // Update header text
-    const titles = { dashboard: '旅行收據管家', upload: '上傳收據', stats: '統計分析', history: '歷史紀錄' };
+    const titles = { dashboard: '旅行收據管家', upload: '上傳收據', stats: '統計分析', history: '歷史紀錄', settings: '設定' };
     document.getElementById('header-text').textContent = titles[page] || '旅行收據管家';
 
     // Render page
@@ -134,6 +132,7 @@ function renderPage(page) {
         upload: renderUpload,
         stats: renderStats,
         history: renderHistory,
+        settings: renderSettings,
     };
 
     const renderer = renderers[page];
@@ -416,6 +415,10 @@ function showReceiptPreview(data, file, activeTrip) {
                 </div>
                 <div style="padding:0 20px 12px">
                    ${data.payment_method === 'credit_card' ? ccOptionsHtml : ''}
+                   <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptPaidBy(${data.id}, this.value)">
+                       <option value="">-- 由誰付款 --</option>
+                       ${COMPANIONS.map(c => `<option value="${c}" ${(data.paid_by || '管理員') === c ? 'selected' : ''}>🙋 ${c}</option>`).join('')}
+                   </select>
                 </div>
                 <div style="padding: 0 20px 12px">
                     <button class="btn btn-primary btn-full" onclick="navigateTo('upload')">繼續上傳</button>
@@ -444,6 +447,7 @@ async function renderStats(container) {
                 <div class="card-title">💳 支付方式分布</div>
                 <div class="chart-wrapper"><canvas id="payment-chart"></canvas></div>
             </div>
+            <div id="payers-section"></div>
             <div id="top10-section"></div>
         </div>
     `;
@@ -520,6 +524,26 @@ async function renderStats(container) {
                 },
                 options: chartOptions(''),
             });
+        }
+
+        // Payers
+        const payersSection = document.getElementById('payers-section');
+        if (data.payers && data.payers.length > 0) {
+            payersSection.innerHTML = `
+                <div class="section-title"><span class="emoji">👥</span> 同行者付款統計</div>
+                <div class="card" style="margin-bottom:20px">
+                    <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+                        ${data.payers.map(p => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:8px">
+                                <span style="font-weight:500;color:var(--text-primary)">${p.paid_by || '管理員'}</span>
+                                <span style="font-weight:700;color:var(--text-primary)">
+                                    ${formatAmount(p.total)}
+                                </span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
         }
 
         // TOP 10
@@ -704,6 +728,12 @@ async function showReceiptDetail(receiptId) {
                     ${r.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${r.credit_card_name}</span>` : ''}
                 </div>
                 ${ccOptionsHtml}
+                <div style="margin-bottom:12px">
+                    <select class="form-select" style="font-size:0.85rem;padding:4px 8px" onchange="updateReceiptPaidByDetail(${r.id}, this.value)">
+                        <option value="">-- 由誰付款 --</option>
+                        ${COMPANIONS.map(c => `<option value="${c}" ${(r.paid_by || '管理員') === c ? 'selected' : ''}>🙋 ${c}</option>`).join('')}
+                    </select>
+                </div>
                 ${r.note ? `<div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">📝 ${r.note}</div>` : ''}
                 <div style="display:flex;gap:8px">
                     <button class="btn btn-danger btn-sm" onclick="deleteReceiptConfirm(${r.id})">🗑️ 刪除</button>
@@ -749,38 +779,74 @@ window.updateReceiptCardDetail = async function(receiptId, cardName) {
     } catch(e) {}
 };
 
-window.changePaymentMethod = async function(receiptId, currentMethod) {
-    const newMethod = prompt("請輸入付款方式代碼 (credit_card, ic_card, cash):", currentMethod);
-    if (newMethod && ['credit_card', 'ic_card', 'cash'].includes(newMethod)) {
-        try {
-            await api(`/api/receipts/${receiptId}`, {
-                method: 'PUT',
-                body: JSON.stringify({ payment_method: newMethod })
-            });
-            showToast('付款方式已更新', 'success');
-            if (currentPage === 'dashboard') renderPage('dashboard');
-            else if (currentPage === 'history') renderPage('history');
-            const modal = document.getElementById('receipt-modal');
-            if (!modal.classList.contains('hidden')) {
-                showReceiptDetail(receiptId);
-            }
-        } catch(e) {}
-    }
+window.updateReceiptPaidBy = async function(receiptId, paidBy) {
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ paid_by: paidBy })
+        });
+        showToast('已更新付款人', 'success');
+    } catch(e) {}
+};
+
+window.updateReceiptPaidByDetail = async function(receiptId, paidBy) {
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ paid_by: paidBy })
+        });
+        showToast('已更新付款人', 'success');
+        showReceiptDetail(receiptId);
+    } catch(e) {}
+};
+
+window.changePaymentMethod = function(receiptId, currentMethod) {
+    const modal = document.getElementById('payment-modal');
+    const body = document.getElementById('payment-modal-body');
+    modal.classList.remove('hidden');
+
+    body.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:12px;">
+            ${PAYMENT_METHODS.map(pm => `
+                <button class="btn ${pm.id === currentMethod ? 'btn-primary' : 'btn-secondary'}"
+                        onclick="updatePaymentMethod(${receiptId}, '${pm.id}')">
+                    ${pm.label}
+                </button>
+            `).join('')}
+        </div>
+    `;
+};
+
+window.updatePaymentMethod = async function(receiptId, pmId) {
+    document.getElementById('payment-modal').classList.add('hidden');
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ payment_method: pmId })
+        });
+        showToast('付款方式已更新', 'success');
+        if (currentPage === 'dashboard') renderPage('dashboard');
+        else if (currentPage === 'history') renderPage('history');
+        const rModal = document.getElementById('receipt-modal');
+        if (!rModal.classList.contains('hidden')) {
+            showReceiptDetail(receiptId);
+        }
+    } catch(e) {}
 };
 
 
 // ═══════════════════════════════════════════════
-//  TRIP MANAGEMENT MODAL
+//  SETTINGS PAGE
 // ═══════════════════════════════════════════════
-async function openTripModal() {
-    const modal = document.getElementById('trip-modal');
-    const body = document.getElementById('trip-modal-body');
-    modal.classList.remove('hidden');
+async function renderSettings(container) {
+    container.innerHTML = '<div class="page-enter" id="settings-content">載入中...</div>';
+    const content = document.getElementById('settings-content');
 
     try {
         const trips = await api('/api/trips');
 
-        body.innerHTML = `
+        content.innerHTML = `
+            <div class="section-title">✈️ 旅程管理</div>
             <div style="margin-bottom:20px">
                 ${trips.length > 0 ? trips.map(t => `
                     <div class="trip-card ${t.is_active ? 'active' : ''}" onclick="setActiveTrip(${t.id}, ${!t.is_active})">
@@ -794,47 +860,96 @@ async function openTripModal() {
                     </div>
                 `).join('') : '<div style="color:var(--text-muted);text-align:center;padding:20px">尚無旅程</div>'}
             </div>
-            <div class="section-title">新增旅程</div>
-            <div class="form-group">
-                <label class="form-label">旅程名稱</label>
-                <input id="trip-name" class="form-input" placeholder="例：2026 東京之旅">
-            </div>
-            <div class="form-row">
+            
+            <div class="card" style="margin-bottom:30px">
+                <div class="card-title">新增旅程</div>
                 <div class="form-group">
-                    <label class="form-label">開始日期</label>
-                    <input id="trip-start" class="form-input" type="date">
+                    <label class="form-label">旅程名稱</label>
+                    <input id="trip-name" class="form-input" placeholder="例：2026 東京之旅">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">開始日期</label>
+                        <input id="trip-start" class="form-input" type="date">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">結束日期</label>
+                        <input id="trip-end" class="form-input" type="date">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">現金預算</label>
+                        <input id="trip-budget" class="form-input" type="number" placeholder="50000">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">幣別</label>
+                        <select id="trip-currency" class="form-select">
+                            <option value="JPY">JPY 日圓</option>
+                            <option value="USD">USD 美元</option>
+                            <option value="EUR">EUR 歐元</option>
+                            <option value="KRW">KRW 韓圓</option>
+                            <option value="TWD">TWD 台幣</option>
+                            <option value="GBP">GBP 英鎊</option>
+                            <option value="THB">THB 泰銖</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">結束日期</label>
-                    <input id="trip-end" class="form-input" type="date">
+                    <label class="form-label">設定信用卡與個別預算 (選填，冒號隔開卡名金額)</label>
+                    <input id="trip-credit-cards" class="form-input" placeholder="例：國泰CUBE:30000, 台新FlyGo:15000">
+                </div>
+                <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
+            </div>
+
+            <div class="section-title">💳 付款方式管理</div>
+            <div class="card" style="margin-bottom:30px">
+                <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                    ${PAYMENT_METHODS.map(pm => `
+                        <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:8px 12px; border-radius:var(--radius-sm);">
+                            <div>
+                                <div style="font-weight:500;">${pm.label}</div>
+                                <div style="font-size:0.75rem; color:var(--text-secondary)">ID: ${pm.id}</div>
+                            </div>
+                            <button class="btn btn-danger btn-sm" onclick="deletePaymentMethod('${pm.id}')">刪除</button>
+                        </div>
+                    `).join('')}
+                </div>
+                <div style="font-size:0.9rem; margin:24px 0 12px; color:var(--text-primary); font-weight:600">新增付款方式</div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                        <label class="form-label">代碼 (英文)</label>
+                        <input id="pm-id" class="form-input" placeholder="例: line_pay">
+                    </div>
+                    <div class="form-group" style="flex:2">
+                        <label class="form-label">顯示名稱 (含Emoji)</label>
+                        <input id="pm-label" class="form-input" placeholder="例: 🟢 LINE Pay">
+                    </div>
+                </div>
+                <button class="btn btn-secondary btn-full" onclick="addPaymentMethod()">新增</button>
+            </div>
+
+            <div class="section-title">👥 同行者管理</div>
+            <div class="card" style="margin-bottom:30px">
+                <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                    ${COMPANIONS.map(c => `
+                        <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.05); padding:8px 12px; border-radius:var(--radius-sm);">
+                            <div style="font-weight:500;">🙋 ${c}</div>
+                            <button class="btn btn-danger btn-sm" onclick="deleteCompanion('${c}')">刪除</button>
+                        </div>
+                    `).join('')}
+                </div>
+                <div style="font-size:0.9rem; margin:24px 0 12px; color:var(--text-primary); font-weight:600">新增同行者</div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                        <input id="companion-name" class="form-input" placeholder="例: Alice">
+                    </div>
+                    <button class="btn btn-secondary" style="white-space:nowrap" onclick="addCompanion()">新增</button>
                 </div>
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label class="form-label">現金預算</label>
-                    <input id="trip-budget" class="form-input" type="number" placeholder="50000">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">幣別</label>
-                    <select id="trip-currency" class="form-select">
-                        <option value="JPY">JPY 日圓</option>
-                        <option value="USD">USD 美元</option>
-                        <option value="EUR">EUR 歐元</option>
-                        <option value="KRW">KRW 韓圓</option>
-                        <option value="TWD">TWD 台幣</option>
-                        <option value="GBP">GBP 英鎊</option>
-                        <option value="THB">THB 泰銖</option>
-                    </select>
-                </div>
-            </div>
-            <div class="form-group">
-                <label class="form-label">設定信用卡與個別預算 (選填，冒號隔開卡名與金額)</label>
-                <input id="trip-credit-cards" class="form-input" placeholder="例：國泰CUBE:30000, 台新FlyGo:15000">
-            </div>
-            <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
         `;
     } catch (err) {
-        body.innerHTML = '<div class="empty-state">載入失敗</div>';
+        content.innerHTML = '<div class="empty-state">載入失敗</div>';
     }
 }
 
@@ -857,7 +972,7 @@ async function createNewTrip() {
             }),
         });
         showToast('旅程已建立！', 'success');
-        openTripModal(); // Refresh
+        if (currentPage === 'settings') renderPage('settings');
     } catch (err) {
         // Toast shown
     }
@@ -872,7 +987,7 @@ window.updateTripCards = async function(tripId) {
             body: JSON.stringify({ credit_cards: input.value.trim() })
         });
         showToast('信用卡清單已更新', 'success');
-        openTripModal();
+        if (currentPage === 'settings') renderPage('settings');
         if (currentPage === 'dashboard') renderPage('dashboard');
     } catch(e) {}
 }
@@ -897,28 +1012,108 @@ async function setActiveTrip(tripId, activate) {
             });
         }
         showToast('旅程已切換', 'success');
-        openTripModal();
+        if (currentPage === 'settings') renderPage('settings');
         if (currentPage === 'dashboard') renderPage('dashboard');
     } catch (err) {
         // Toast shown
     }
 }
 
+window.addPaymentMethod = async function() {
+    const id = document.getElementById('pm-id').value.trim();
+    const label = document.getElementById('pm-label').value.trim();
+    if (!id || !label) { showToast('請填寫代碼與顯示名稱', 'error'); return; }
+    if (PAYMENT_METHODS.find(pm => pm.id === id)) { showToast('該代碼已存在', 'error'); return; }
+
+    const newList = [...PAYMENT_METHODS, { id, label }];
+    await savePaymentMethods(newList);
+};
+
+window.deletePaymentMethod = async function(id) {
+    if (PAYMENT_METHODS.length <= 1) { showToast('至少需保留一個付款方式', 'error'); return; }
+    if (!confirm('確定要刪除這個付款方式嗎？')) return;
+
+    const newList = PAYMENT_METHODS.filter(pm => pm.id !== id);
+    await savePaymentMethods(newList);
+};
+
+async function savePaymentMethods(newList) {
+    try {
+        await api('/api/settings/payment_methods', {
+            method: 'PUT',
+            body: JSON.stringify({ value: newList })
+        });
+        PAYMENT_METHODS = newList;
+        PAYMENT_LABELS = {};
+        PAYMENT_METHODS.forEach(pm => { PAYMENT_LABELS[pm.id] = pm.label; });
+        showToast('付款方式已更新', 'success');
+        if (currentPage === 'settings') renderPage('settings');
+    } catch(e) {}
+}
+
+window.addCompanion = async function() {
+    const name = document.getElementById('companion-name').value.trim();
+    if (!name) { showToast('請填寫同行者名稱', 'error'); return; }
+    if (COMPANIONS.includes(name)) { showToast('該名字已存在', 'error'); return; }
+
+    const newList = [...COMPANIONS, name];
+    await saveCompanions(newList);
+};
+
+window.deleteCompanion = async function(name) {
+    if (COMPANIONS.length <= 1) { showToast('至少需保留一名同行者', 'error'); return; }
+    if (!confirm('確定要刪除這位同行者嗎？')) return;
+
+    const newList = COMPANIONS.filter(c => c !== name);
+    await saveCompanions(newList);
+};
+
+async function saveCompanions(newList) {
+    try {
+        await api('/api/settings/companions', {
+            method: 'PUT',
+            body: JSON.stringify({ value: newList })
+        });
+        COMPANIONS = newList;
+        showToast('同行者名單已更新', 'success');
+        if (currentPage === 'settings') renderPage('settings');
+    } catch(e) {}
+}
+
 
 // ═══════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const pmData = await api('/api/settings/payment_methods');
+        PAYMENT_METHODS = pmData.value;
+    } catch(e) {
+        PAYMENT_METHODS = [
+            {id: 'credit_card', label: '💳 信用卡'},
+            {id: 'ic_card', label: '🚃 交通IC卡'},
+            {id: 'cash', label: '💴 現金'}
+        ];
+    }
+    PAYMENT_LABELS = {};
+    PAYMENT_METHODS.forEach(pm => { PAYMENT_LABELS[pm.id] = pm.label; });
+
+    try {
+        const cData = await api('/api/settings/companions');
+        COMPANIONS = cData.value;
+    } catch(e) {
+        COMPANIONS = ['管理員'];
+    }
+
     initNavigation();
     navigateTo('dashboard');
 
-    // Trip modal
-    document.getElementById('trip-menu-btn').addEventListener('click', openTripModal);
-    document.getElementById('trip-modal-close').addEventListener('click', () => {
-        document.getElementById('trip-modal').classList.add('hidden');
+    // Payment modal
+    document.getElementById('payment-modal-close').addEventListener('click', () => {
+        document.getElementById('payment-modal').classList.add('hidden');
     });
-    document.querySelector('#trip-modal .modal-backdrop').addEventListener('click', () => {
-        document.getElementById('trip-modal').classList.add('hidden');
+    document.querySelector('#payment-modal .modal-backdrop').addEventListener('click', () => {
+        document.getElementById('payment-modal').classList.add('hidden');
     });
 
     // Receipt detail modal

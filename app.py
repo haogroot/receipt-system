@@ -5,7 +5,7 @@ from config import Config
 from database import (
     init_db, create_trip, get_trips, get_active_trip, update_trip,
     create_receipt, get_receipts, get_receipt, update_receipt, delete_receipt,
-    get_dashboard_data, get_stats_data,
+    get_dashboard_data, get_stats_data, get_setting, update_setting
 )
 from receipt_processor import process_receipt_image
 
@@ -68,6 +68,7 @@ def upload_receipt():
             raw_json=result,
             items=result.get("items", []),
             credit_card_name=result.get("credit_card_name", ""),
+            paid_by=result.get("paid_by", "管理員"),
         )
 
         result["id"] = receipt_id
@@ -128,6 +129,7 @@ def confirm_receipt():
         items=data.get("items", []),
         note=data.get("note", ""),
         credit_card_name=data.get("credit_card_name", ""),
+        paid_by=data.get("paid_by", "管理員"),
     )
 
     return jsonify({"id": receipt_id, "message": "Receipt saved"}), 201
@@ -236,6 +238,25 @@ def update_trip_api(trip_id):
         return jsonify({"error": "No data provided"}), 400
     update_trip(trip_id, **data)
     return jsonify({"message": "Trip updated"})
+
+
+# ─── Settings Management ───
+
+@app.route("/api/settings/<key>", methods=["GET"])
+def get_setting_api(key):
+    val = get_setting(key)
+    if val is None:
+        return jsonify({"error": "Setting not found"}), 404
+    return jsonify({"key": key, "value": val})
+
+
+@app.route("/api/settings/<key>", methods=["PUT"])
+def update_setting_api(key):
+    data = request.json
+    if not data or "value" not in data:
+        return jsonify({"error": "No value provided"}), 400
+    update_setting(key, data["value"])
+    return jsonify({"message": "Setting updated"})
 
 
 # ─── Image Access ───

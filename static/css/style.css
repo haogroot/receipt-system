@@ -773,6 +773,10 @@ body {
     backdrop-filter: blur(4px);
 }
 
+#payment-modal {
+    z-index: 210;
+}
+
 .modal-content {
     position: relative;
     width: 100%;

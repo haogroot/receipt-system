@@ -42,7 +42,8 @@ def init_db():
             raw_json TEXT,
             note TEXT DEFAULT '',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            credit_card_name TEXT DEFAULT ''
+            credit_card_name TEXT DEFAULT '',
+            paid_by TEXT DEFAULT '管理員'
         );
 
         CREATE TABLE IF NOT EXISTS receipt_items (
@@ -52,6 +53,11 @@ def init_db():
             quantity INTEGER DEFAULT 1,
             unit_price REAL,
             amount REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
         );
     """)
 
@@ -64,9 +70,51 @@ def init_db():
         cursor.execute("ALTER TABLE receipts ADD COLUMN credit_card_name TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE receipts ADD COLUMN paid_by TEXT DEFAULT '管理員'")
+    except sqlite3.OperationalError:
+        pass
+
+    import json
+    default_pm = json.dumps([
+        {"id": "credit_card", "label": "💳 信用卡"},
+        {"id": "ic_card", "label": "🚃 交通卡"},
+        {"id": "cash", "label": "💴 現金"}
+    ], ensure_ascii=False)
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_methods', ?)", (default_pm,))
+
+    default_companions = json.dumps(["管理員"], ensure_ascii=False)
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('companions', ?)", (default_companions,))
 
     conn.commit()
     conn.close()
+
+
+# ─── Settings Operations ───
+
+def get_setting(key, default=None):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    if row:
+        try:
+            return json.loads(row["value"])
+        except ValueError:
+            return row["value"]
+    return default
+
+
+def update_setting(key, value):
+    conn = get_db()
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value)
+    )
+    conn.commit()
+    conn.close()
+    return True
 
 
 # ─── Trip Operations ───
@@ -116,15 +164,15 @@ def update_trip(trip_id, **kwargs):
 # ─── Receipt Operations ───
 
 def create_receipt(trip_id, store_name, date, total_amount, currency, payment_method,
-                   category, image_path, raw_json, items, note="", credit_card_name=""):
+                   category, image_path, raw_json, items, note="", credit_card_name="", paid_by="管理員"):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         """INSERT INTO receipts
-           (trip_id, store_name, date, total_amount, currency, payment_method, category, image_path, raw_json, note, credit_card_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (trip_id, store_name, date, total_amount, currency, payment_method, category, image_path, raw_json, note, credit_card_name, paid_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (trip_id, store_name, date, total_amount, currency, payment_method,
-         category, image_path, json.dumps(raw_json, ensure_ascii=False), note, credit_card_name),
+         category, image_path, json.dumps(raw_json, ensure_ascii=False), note, credit_card_name, paid_by),
     )
     receipt_id = cursor.lastrowid
 
@@ -186,7 +234,7 @@ def get_receipt(receipt_id):
 
 def update_receipt(receipt_id, **kwargs):
     conn = get_db()
-    allowed = ["store_name", "date", "total_amount", "currency", "payment_method", "category", "note", "trip_id", "credit_card_name"]
+    allowed = ["store_name", "date", "total_amount", "currency", "payment_method", "category", "note", "trip_id", "credit_card_name", "paid_by"]
     fields = {k: v for k, v in kwargs.items() if k in allowed}
 
     if fields:
@@ -319,6 +367,12 @@ def get_stats_data(trip_id=None):
         params,
     ).fetchall()
 
+    # Payers
+    payers = conn.execute(
+        f"SELECT paid_by, SUM(total_amount) as total FROM receipts {where} GROUP BY paid_by ORDER BY total DESC",
+        params,
+    ).fetchall()
+
     conn.close()
 
     return {
@@ -326,4 +380,5 @@ def get_stats_data(trip_id=None):
         "categories": [dict(c) for c in categories],
         "payment_methods": [dict(p) for p in payments],
         "top10": [dict(t) for t in top10],
+        "payers": [dict(p) for p in payers],
     }
