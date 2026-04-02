@@ -19,6 +19,34 @@ const CATEGORY_COLORS = {
 let PAYMENT_LABELS = {};
 let PAYMENT_METHODS = [];
 let COMPANIONS = [];
+let CC_BUDGETS = {}; // { "管理員": "卡名:預算, ...", "Alice": "卡名:預算" }
+
+// Helper: parse a payer's cc budget string into { cardName: budgetAmount }
+function parseCcBudgets(budgetStr) {
+    const result = {};
+    if (!budgetStr) return result;
+    budgetStr.split(',').forEach(cstr => {
+        const parts = cstr.split(':');
+        if (parts.length >= 2) {
+            const amt = parseFloat(parts[1]);
+            if (!isNaN(amt)) result[parts[0].trim()] = amt;
+        }
+    });
+    return result;
+}
+
+// Helper: get all unique card names across all payers
+function getAllCardNames() {
+    const names = new Set();
+    Object.values(CC_BUDGETS).forEach(budgetStr => {
+        if (!budgetStr) return;
+        budgetStr.split(',').forEach(cstr => {
+            const name = cstr.split(':')[0].trim();
+            if (name) names.add(name);
+        });
+    });
+    return [...names];
+}
 
 // ─── API Helpers ───
 async function api(url, options = {}) {
@@ -201,58 +229,37 @@ async function renderDashboard(container) {
             budgetSection.innerHTML = '';
         }
 
-        // Credit card breakdown
+        // Credit card breakdown by payer (tab-based)
         const ccSection = document.getElementById('cc-section');
-        if (data.cc_spent && data.cc_spent.length > 0) {
-            // Parse card budgets config back to object
-            const cardBudgets = {};
-            if (trip && trip.credit_cards) {
-                trip.credit_cards.split(',').forEach(cstr => {
-                    const parts = cstr.split(':');
-                    if (parts.length >= 2) {
-                        const amt = parseFloat(parts[1]);
-                        if (!isNaN(amt)) cardBudgets[parts[0].trim()] = amt;
-                    }
-                });
-            }
+        // Update global CC_BUDGETS from API response
+        if (data.cc_budgets) CC_BUDGETS = data.cc_budgets;
 
+        const ccByPayer = data.cc_spent_by_payer || {};
+        const payersWithCC = Object.keys(ccByPayer);
+        // Also include payers who have budget config but no spending yet
+        Object.keys(CC_BUDGETS).forEach(p => {
+            if (!payersWithCC.includes(p) && CC_BUDGETS[p]) payersWithCC.push(p);
+        });
+
+        if (payersWithCC.length > 0) {
+            const firstPayer = payersWithCC[0];
             ccSection.innerHTML = `
                 <div class="card" style="margin-bottom:20px">
-                    <div class="card-title">💳 信用卡累計花費</div>
-                    <div style="display:flex;flex-direction:column;gap:16px;margin-top:8px">
-                        ${data.cc_spent.map(c => {
-                            const budget = cardBudgets[c.credit_card_name] || 0;
-                            let budgetHtml = '';
-                            if (budget > 0) {
-                                const pct = Math.min((c.total / budget) * 100, 100);
-                                const barClass = c.total > budget ? 'danger' : pct > 90 ? 'warning' : '';
-                                budgetHtml = `
-                                    <div class="budget-bar-container" style="height:6px;margin-top:6px;background:rgba(255,255,255,0.05)">
-                                        <div class="budget-bar ${barClass}" style="width:${pct}%"></div>
-                                    </div>
-                                    <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-secondary);margin-top:4px">
-                                        <span>預算: ${formatAmount(budget)} ${trip ? trip.currency : ''}</span>
-                                        <span>${pct.toFixed(0)}%</span>
-                                    </div>
-                                `;
-                            }
-                            return `
-                                <div style="border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:8px">
-                                    <div style="display:flex;justify-content:space-between;align-items:center">
-                                        <span style="font-weight:500;color:var(--text-primary)">
-                                            ${c.credit_card_name}
-                                        </span>
-                                        <span style="font-size:1.1rem;font-weight:700;color:${budget > 0 && c.total > budget ? '#ef4444' : 'var(--text-primary)'}">
-                                            ${trip ? trip.currency : ''} ${formatAmount(c.total)}
-                                        </span>
-                                    </div>
-                                    ${budgetHtml}
-                                </div>
-                            `;
-                        }).join('')}
+                    <div class="card-title">💳 信用卡消費 (依付款者)</div>
+                    <div class="cc-payer-tabs" style="display:flex;gap:6px;margin:10px 0;flex-wrap:wrap">
+                        ${payersWithCC.map((p, i) => `
+                            <button class="btn btn-sm cc-payer-tab ${i === 0 ? 'btn-primary' : 'btn-secondary'}" data-payer="${p}" onclick="switchCcPayerTab(this, '${p.replace(/'/g, "\\'")}')" style="font-size:0.8rem;padding:4px 12px;border-radius:20px">
+                                🙋 ${p}
+                            </button>
+                        `).join('')}
                     </div>
+                    <div id="cc-payer-content" style="margin-top:8px"></div>
                 </div>
             `;
+            // Render first payer by default
+            window._ccByPayer = ccByPayer;
+            window._ccTrip = trip;
+            renderCcPayerContent(firstPayer, ccByPayer, trip);
         } else {
             ccSection.innerHTML = '';
         }
@@ -372,16 +379,14 @@ function showReceiptPreview(data, file, activeTrip) {
     const imgUrl = file ? URL.createObjectURL(file) : (data.image_path ? `/uploads/${data.image_path}` : '');
 
     let ccOptionsHtml = '';
-    if (activeTrip && activeTrip.credit_cards) {
-        const cards = activeTrip.credit_cards.split(',').map(c => c.split(':')[0].trim()).filter(c => c);
-        if (cards.length > 0) {
-            ccOptionsHtml = `
-                <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${data.id}, this.value)">
-                    <option value="">-- 指定信用卡 --</option>
-                    ${cards.map(c => `<option value="${c}" ${data.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
-                </select>
-            `;
-        }
+    const allCards = getAllCardNames();
+    if (allCards.length > 0) {
+        ccOptionsHtml = `
+            <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${data.id}, this.value)">
+                <option value="">-- 指定信用卡 --</option>
+                ${allCards.map(c => `<option value="${c}" ${data.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
+            </select>
+        `;
     }
 
     previewArea.innerHTML = `
@@ -685,14 +690,14 @@ async function showReceiptDetail(receiptId) {
         const activeTrip = trips.find(t => t.is_active) || null;
 
         let ccOptionsHtml = '';
-        if (activeTrip && activeTrip.credit_cards && r.payment_method === 'credit_card') {
-            const cards = activeTrip.credit_cards.split(',').map(c => c.split(':')[0].trim()).filter(c => c);
-            if (cards.length > 0) {
+        if (r.payment_method === 'credit_card') {
+            const allCards = getAllCardNames();
+            if (allCards.length > 0) {
                 ccOptionsHtml = `
                     <div style="margin-bottom:12px">
                         <select class="form-select" style="font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCardDetail(${r.id}, this.value)">
                             <option value="">-- 指定信用卡 --</option>
-                            ${cards.map(c => `<option value="${c}" ${r.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
+                            ${allCards.map(c => `<option value="${c}" ${r.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
                         </select>
                     </div>
                 `;
@@ -853,10 +858,6 @@ async function renderSettings(container) {
                         <div class="trip-card-name">${t.is_active ? '✅ ' : ''}${t.name}</div>
                         <div class="trip-card-dates">${t.start_date || ''} ~ ${t.end_date || ''}</div>
                         ${t.budget_cash > 0 ? `<div class="trip-card-budget" style="margin-bottom:8px">現金預算: ${formatAmount(t.budget_cash)} ${t.currency}</div>` : ''}
-                        <div style="font-size:0.85rem;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">
-                            <input type="text" id="edit-cards-${t.id}" value="${t.credit_cards || ''}" class="form-input" style="padding:4px 8px;font-size:0.8rem;background:rgba(255,255,255,0.05);color:white" placeholder="卡片:預算 (例 國泰:1萬, 飛狗:5千)">
-                            <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="updateTripCards(${t.id})">儲存</button>
-                        </div>
                     </div>
                 `).join('') : '<div style="color:var(--text-muted);text-align:center;padding:20px">尚無旅程</div>'}
             </div>
@@ -894,10 +895,6 @@ async function renderSettings(container) {
                             <option value="THB">THB 泰銖</option>
                         </select>
                     </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">設定信用卡與個別預算 (選填，冒號隔開卡名金額)</label>
-                    <input id="trip-credit-cards" class="form-input" placeholder="例：國泰CUBE:30000, 台新FlyGo:15000">
                 </div>
                 <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
             </div>
@@ -947,6 +944,22 @@ async function renderSettings(container) {
                     <button class="btn btn-secondary" style="white-space:nowrap" onclick="addCompanion()">新增</button>
                 </div>
             </div>
+
+            <div class="section-title">💳 信用卡預算管理 (依付款者)</div>
+            <div class="card" style="margin-bottom:30px">
+                <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:16px">每位付款者可設定各自的信用卡和預算，格式：卡名:預算，用逗號分隔。新增卡片時預設預算為 50,000。</div>
+                <div style="display:flex; flex-direction:column; gap:16px;">
+                    ${COMPANIONS.map(c => `
+                        <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,0.06)">
+                            <div style="font-weight:600;color:var(--text-primary);margin-bottom:8px">🙋 ${c}</div>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <input type="text" id="cc-budget-${c}" value="${CC_BUDGETS[c] || ''}" class="form-input" style="flex:1;padding:6px 10px;font-size:0.85rem;background:rgba(255,255,255,0.05);color:white" placeholder="例: 國泰CUBE:50000, 台新FlyGo:50000">
+                                <button class="btn btn-secondary btn-sm" style="padding:4px 10px;white-space:nowrap" onclick="saveCcBudget('${c.replace(/'/g, "\\'")}')">儲存</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
         `;
     } catch (err) {
         content.innerHTML = '<div class="empty-state">載入失敗</div>';
@@ -957,8 +970,6 @@ async function createNewTrip() {
     const name = document.getElementById('trip-name').value.trim();
     if (!name) { showToast('請輸入旅程名稱', 'error'); return; }
 
-    const creditCards = document.getElementById('trip-credit-cards').value.trim();
-
     try {
         await api('/api/trips', {
             method: 'POST',
@@ -968,7 +979,6 @@ async function createNewTrip() {
                 end_date: document.getElementById('trip-end').value || null,
                 budget_cash: parseFloat(document.getElementById('trip-budget').value) || 0,
                 currency: document.getElementById('trip-currency').value,
-                credit_cards: creditCards,
             }),
         });
         showToast('旅程已建立！', 'success');
@@ -978,19 +988,90 @@ async function createNewTrip() {
     }
 }
 
-window.updateTripCards = async function(tripId) {
-    const input = document.getElementById(`edit-cards-${tripId}`);
-    if(!input) return;
+// Per-payer CC budget management
+window.saveCcBudget = async function(payerName) {
+    const input = document.getElementById(`cc-budget-${payerName}`);
+    if (!input) return;
+    CC_BUDGETS[payerName] = input.value.trim();
     try {
-        await api(`/api/trips/${tripId}`, {
+        await api('/api/settings/cc_budgets', {
             method: 'PUT',
-            body: JSON.stringify({ credit_cards: input.value.trim() })
+            body: JSON.stringify({ value: CC_BUDGETS })
         });
-        showToast('信用卡清單已更新', 'success');
-        if (currentPage === 'settings') renderPage('settings');
+        showToast(`${payerName} 的信用卡預算已更新`, 'success');
         if (currentPage === 'dashboard') renderPage('dashboard');
     } catch(e) {}
+};
+
+// Render CC content for a specific payer tab
+function renderCcPayerContent(payerName, ccByPayer, trip) {
+    const container = document.getElementById('cc-payer-content');
+    if (!container) return;
+
+    const payerCards = ccByPayer[payerName] || [];
+    const budgets = parseCcBudgets(CC_BUDGETS[payerName]);
+
+    // Merge: show cards with spending + cards with budget but no spending yet
+    const cardNames = new Set(payerCards.map(c => c.credit_card_name));
+    Object.keys(budgets).forEach(name => cardNames.add(name));
+
+    if (cardNames.size === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;text-align:center;padding:12px">此付款者尚無信用卡消費或預算設定</div>';
+        return;
+    }
+
+    const currency = trip ? trip.currency : 'JPY';
+    let html = '<div style="display:flex;flex-direction:column;gap:14px">';
+
+    cardNames.forEach(cardName => {
+        const spentEntry = payerCards.find(c => c.credit_card_name === cardName);
+        const spent = spentEntry ? spentEntry.total : 0;
+        const budget = budgets[cardName] || 0;
+
+        let budgetHtml = '';
+        if (budget > 0) {
+            const pct = Math.min((spent / budget) * 100, 100);
+            const barClass = spent > budget ? 'danger' : pct > 90 ? 'warning' : '';
+            budgetHtml = `
+                <div class="budget-bar-container" style="height:6px;margin-top:6px;background:rgba(255,255,255,0.05)">
+                    <div class="budget-bar ${barClass}" style="width:${pct}%"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-secondary);margin-top:4px">
+                    <span>預算: ${formatAmount(budget)} ${currency}</span>
+                    <span>${pct.toFixed(0)}%</span>
+                </div>
+            `;
+        }
+
+        html += `
+            <div style="border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:10px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-weight:500;color:var(--text-primary)">${cardName}</span>
+                    <span style="font-size:1.1rem;font-weight:700;color:${budget > 0 && spent > budget ? '#ef4444' : 'var(--text-primary)'}">
+                        ${currency} ${formatAmount(spent)}
+                    </span>
+                </div>
+                ${budgetHtml}
+            </div>
+        `;
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
 }
+
+// Tab switching for cc payer
+window.switchCcPayerTab = function(btn, payerName) {
+    document.querySelectorAll('.cc-payer-tab').forEach(b => {
+        b.classList.remove('btn-primary');
+        b.classList.add('btn-secondary');
+    });
+    btn.classList.remove('btn-secondary');
+    btn.classList.add('btn-primary');
+
+    // Re-render content — we stash the data on the window for reuse
+    renderCcPayerContent(payerName, window._ccByPayer || {}, window._ccTrip || null);
+};
 
 async function setActiveTrip(tripId, activate) {
     try {
@@ -1103,6 +1184,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         COMPANIONS = cData.value;
     } catch(e) {
         COMPANIONS = ['管理員'];
+    }
+
+    try {
+        const ccData = await api('/api/settings/cc_budgets');
+        CC_BUDGETS = ccData.value || {};
+    } catch(e) {
+        CC_BUDGETS = {};
     }
 
     initNavigation();

@@ -193,6 +193,11 @@ def dashboard():
     # Include active trip info
     trip = get_active_trip()
     data["active_trip"] = trip
+
+    # Include per-payer credit card budgets
+    cc_budgets = get_setting("cc_budgets", {})
+    data["cc_budgets"] = cc_budgets
+
     return jsonify(data)
 
 

@@ -86,6 +86,27 @@ def init_db():
     default_companions = json.dumps(["管理員"], ensure_ascii=False)
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('companions', ?)", (default_companions,))
 
+    # Initialize cc_budgets if not exists, migrate from trips.credit_cards if available
+    existing_cc_budgets = cursor.execute("SELECT value FROM settings WHERE key = 'cc_budgets'").fetchone()
+    if not existing_cc_budgets:
+        cc_budgets = {}
+        # Try to migrate from active trip's credit_cards field
+        active_trip = cursor.execute("SELECT credit_cards FROM trips WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1").fetchone()
+        if active_trip and active_trip[0]:
+            # Get first companion as default owner
+            companions_row = cursor.execute("SELECT value FROM settings WHERE key = 'companions'").fetchone()
+            first_companion = "管理員"
+            if companions_row:
+                try:
+                    companions_list = json.loads(companions_row[0])
+                    if companions_list:
+                        first_companion = companions_list[0]
+                except (ValueError, IndexError):
+                    pass
+            cc_budgets[first_companion] = active_trip[0]
+        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('cc_budgets', ?)",
+                       (json.dumps(cc_budgets, ensure_ascii=False),))
+
     conn.commit()
     conn.close()
 
@@ -292,6 +313,7 @@ def get_dashboard_data(trip_id=None):
     trip_count = 0
     cash_spent = 0
     cc_spent = []
+    cc_spent_by_payer = {}
     if trip_id:
         trip_total = conn.execute(
             "SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ?",
@@ -312,6 +334,18 @@ def get_dashboard_data(trip_id=None):
         ).fetchall()
         cc_spent = [dict(r) for r in cc_spent_raw]
 
+        # Credit card spending grouped by payer
+        cc_by_payer_raw = conn.execute(
+            "SELECT paid_by, credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != '' GROUP BY paid_by, credit_card_name ORDER BY paid_by, total DESC",
+            (trip_id,)
+        ).fetchall()
+        for row in cc_by_payer_raw:
+            r = dict(row)
+            payer = r["paid_by"] or "管理員"
+            if payer not in cc_spent_by_payer:
+                cc_spent_by_payer[payer] = []
+            cc_spent_by_payer[payer].append({"credit_card_name": r["credit_card_name"], "total": r["total"]})
+
     # Recent receipts
     q_recent = "SELECT id, store_name, date, total_amount, currency, payment_method, category, credit_card_name FROM receipts"
     params_recent = []
@@ -330,6 +364,7 @@ def get_dashboard_data(trip_id=None):
         "trip_count": trip_count,
         "cash_spent": cash_spent,
         "cc_spent": cc_spent,
+        "cc_spent_by_payer": cc_spent_by_payer,
         "recent_receipts": [dict(r) for r in recent],
     }
 
