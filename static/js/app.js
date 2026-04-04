@@ -800,7 +800,10 @@ async function renderStats(container) {
                         <span style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0;display:inline-block"></span>
                         <span style="flex:1;font-size:0.9rem;color:var(--text-primary)">${CATEGORY_EMOJI[c.category] || '📦'} ${c.category}</span>
                         <span style="font-size:0.8rem;color:var(--text-muted)">${pct}%</span>
-                        <span style="font-weight:700;color:var(--text-primary);font-size:0.95rem">¥ ${formatAmount(c.total)}</span>
+                        <div style="text-align:right">
+                            <div style="font-weight:700;color:var(--text-primary);font-size:0.95rem">¥ ${formatAmount(c.total)}</div>
+                            <div style="font-size:0.75rem;color:var(--text-muted)">${formatTwd(c.total)}</div>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -820,7 +823,10 @@ async function renderStats(container) {
                         <span style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0;display:inline-block"></span>
                         <span style="flex:1;font-size:0.9rem;color:var(--text-primary)">${label}</span>
                         <span style="font-size:0.8rem;color:var(--text-muted)">${pct}%</span>
-                        <span style="font-weight:700;color:var(--text-primary);font-size:0.95rem">¥ ${formatAmount(p.total)}</span>
+                        <div style="text-align:right">
+                            <div style="font-weight:700;color:var(--text-primary);font-size:0.95rem">¥ ${formatAmount(p.total)}</div>
+                            <div style="font-size:0.75rem;color:var(--text-muted)">${formatTwd(p.total)}</div>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -840,9 +846,10 @@ async function renderStats(container) {
                             ${filteredPayers.map(p => `
                                 <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border-glass);padding-bottom:8px">
                                     <span style="font-weight:500;color:var(--text-primary)">${getCompanionIcon(p.paid_by || '豪')} ${p.paid_by || '豪'}</span>
-                                    <span style="font-weight:700;color:var(--text-primary)">
-                                        ¥ ${formatAmount(p.total)}
-                                    </span>
+                                    <div style="text-align:right">
+                                        <div style="font-weight:700;color:var(--text-primary)">¥ ${formatAmount(p.total)}</div>
+                                        <div style="font-size:0.75rem;color:var(--text-muted)">${formatTwd(p.total)}</div>
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
@@ -891,7 +898,10 @@ async function renderStats(container) {
                                     <div class="top10-store">${t.store_name || '未知'}</div>
                                     <div class="top10-date">${t.date || ''} · ${t.category || ''}</div>
                                 </div>
-                                <div class="top10-amount">${formatAmount(t.total_amount)}</div>
+                                <div class="top10-amount">
+                                    <div>¥ ${formatAmount(t.total_amount)}</div>
+                                    <div style="font-size:0.72rem;color:var(--text-muted);font-weight:400">${formatTwd(t.total_amount)}</div>
+                                </div>
                             </div>
                         `).join('')}
                     </div>
