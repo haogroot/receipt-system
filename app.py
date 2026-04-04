@@ -68,7 +68,7 @@ def upload_receipt():
             raw_json=result,
             items=result.get("items", []),
             credit_card_name=result.get("credit_card_name", ""),
-            paid_by=result.get("paid_by", "管理員"),
+            paid_by=result.get("paid_by", "豪"),
         )
 
         result["id"] = receipt_id
@@ -129,7 +129,7 @@ def confirm_receipt():
         items=data.get("items", []),
         note=data.get("note", ""),
         credit_card_name=data.get("credit_card_name", ""),
-        paid_by=data.get("paid_by", "管理員"),
+        paid_by=data.get("paid_by", "豪"),
     )
 
     return jsonify({"id": receipt_id, "message": "Receipt saved"}), 201
@@ -195,7 +195,14 @@ def dashboard():
     data["active_trip"] = trip
 
     # Include per-payer credit card budgets
-    cc_budgets = get_setting("cc_budgets", {})
+    import json
+    if trip and trip.get("cc_budgets"):
+        try:
+            cc_budgets = json.loads(trip["cc_budgets"])
+        except ValueError:
+            cc_budgets = get_setting("cc_budgets", {})
+    else:
+        cc_budgets = get_setting("cc_budgets", {})
     data["cc_budgets"] = cc_budgets
 
     return jsonify(data)
@@ -232,6 +239,9 @@ def create_trip_api():
         budget_cash=data.get("budget_cash", 0),
         currency=data.get("currency", "JPY"),
         credit_cards=data.get("credit_cards", ""),
+        payment_methods=data.get("payment_methods"),
+        companions=data.get("companions"),
+        cc_budgets=data.get("cc_budgets")
     )
     return jsonify({"id": trip_id, "message": "Trip created"}), 201
 

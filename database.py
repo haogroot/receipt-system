@@ -26,7 +26,10 @@ def init_db():
             currency TEXT DEFAULT 'JPY',
             is_active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            credit_cards TEXT DEFAULT ''
+            credit_cards TEXT DEFAULT '',
+            payment_methods TEXT,
+            companions TEXT,
+            cc_budgets TEXT
         );
 
         CREATE TABLE IF NOT EXISTS receipts (
@@ -43,7 +46,7 @@ def init_db():
             note TEXT DEFAULT '',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             credit_card_name TEXT DEFAULT '',
-            paid_by TEXT DEFAULT '管理員'
+            paid_by TEXT DEFAULT '豪'
         );
 
         CREATE TABLE IF NOT EXISTS receipt_items (
@@ -67,11 +70,23 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        cursor.execute("ALTER TABLE trips ADD COLUMN payment_methods TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE trips ADD COLUMN companions TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE trips ADD COLUMN cc_budgets TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
         cursor.execute("ALTER TABLE receipts ADD COLUMN credit_card_name TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
     try:
-        cursor.execute("ALTER TABLE receipts ADD COLUMN paid_by TEXT DEFAULT '管理員'")
+        cursor.execute("ALTER TABLE receipts ADD COLUMN paid_by TEXT DEFAULT '豪'")
     except sqlite3.OperationalError:
         pass
 
@@ -83,7 +98,7 @@ def init_db():
     ], ensure_ascii=False)
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_methods', ?)", (default_pm,))
 
-    default_companions = json.dumps(["管理員"], ensure_ascii=False)
+    default_companions = json.dumps(["豪", "卿"], ensure_ascii=False)
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('companions', ?)", (default_companions,))
 
     # Initialize cc_budgets if not exists, migrate from trips.credit_cards if available
@@ -95,7 +110,7 @@ def init_db():
         if active_trip and active_trip[0]:
             # Get first companion as default owner
             companions_row = cursor.execute("SELECT value FROM settings WHERE key = 'companions'").fetchone()
-            first_companion = "管理員"
+            first_companion = "豪"
             if companions_row:
                 try:
                     companions_list = json.loads(companions_row[0])
@@ -106,6 +121,49 @@ def init_db():
             cc_budgets[first_companion] = active_trip[0]
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('cc_budgets', ?)",
                        (json.dumps(cc_budgets, ensure_ascii=False),))
+
+    # Migrate '管理員' to '豪' and update companions if needed
+    cursor.execute("UPDATE receipts SET paid_by = '豪' WHERE paid_by = '管理員'")
+    
+    existing_comps = cursor.execute("SELECT value FROM settings WHERE key = 'companions'").fetchone()
+    if existing_comps:
+        try:
+            comps = json.loads(existing_comps[0])
+            if "管理員" in comps:
+                # Replace "管理員" with "豪" and "卿" if they are the only companions
+                new_comps = ["豪", "卿"] if comps == ["管理員"] else [c if c != "管理員" else "豪" for c in comps]
+                if "卿" not in new_comps:
+                    new_comps.append("卿")
+                cursor.execute("UPDATE settings SET value = ? WHERE key = 'companions'", (json.dumps(new_comps, ensure_ascii=False),))
+        except (ValueError, TypeError):
+            pass
+
+    # Migrate cc_budgets
+    existing_cc_budgets_val = cursor.execute("SELECT value FROM settings WHERE key = 'cc_budgets'").fetchone()
+    if existing_cc_budgets_val:
+        try:
+            cc = json.loads(existing_cc_budgets_val[0])
+            if "管理員" in cc:
+                cc["豪"] = cc.pop("管理員")
+                cursor.execute("UPDATE settings SET value = ? WHERE key = 'cc_budgets'", (json.dumps(cc, ensure_ascii=False),))
+        except (ValueError, TypeError):
+            pass
+
+    # Hydrate old trips with current global settings if they are newly added and NULL
+    cursor.execute("SELECT value FROM settings WHERE key = 'payment_methods'")
+    pm_row = cursor.fetchone()
+    if pm_row:
+        cursor.execute("UPDATE trips SET payment_methods = ? WHERE payment_methods IS NULL", (pm_row[0],))
+        
+    cursor.execute("SELECT value FROM settings WHERE key = 'companions'")
+    comp_row = cursor.fetchone()
+    if comp_row:
+        cursor.execute("UPDATE trips SET companions = ? WHERE companions IS NULL", (comp_row[0],))
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'cc_budgets'")
+    cc_row = cursor.fetchone()
+    if cc_row:
+        cursor.execute("UPDATE trips SET cc_budgets = ? WHERE cc_budgets IS NULL", (cc_row[0],))
 
     conn.commit()
     conn.close()
@@ -140,12 +198,31 @@ def update_setting(key, value):
 
 # ─── Trip Operations ───
 
-def create_trip(name, start_date=None, end_date=None, budget_cash=0, currency="JPY", credit_cards=""):
+def create_trip(name, start_date=None, end_date=None, budget_cash=0, currency="JPY", credit_cards="", payment_methods=None, companions=None, cc_budgets=None):
     conn = get_db()
     cursor = conn.cursor()
+    
+    if payment_methods is None:
+        pm_val = cursor.execute("SELECT value FROM settings WHERE key = 'payment_methods'").fetchone()
+        payment_methods = pm_val["value"] if pm_val else json.dumps([])
+    elif not isinstance(payment_methods, str):
+        payment_methods = json.dumps(payment_methods, ensure_ascii=False)
+        
+    if companions is None:
+        c_val = cursor.execute("SELECT value FROM settings WHERE key = 'companions'").fetchone()
+        companions = c_val["value"] if c_val else json.dumps([])
+    elif not isinstance(companions, str):
+        companions = json.dumps(companions, ensure_ascii=False)
+        
+    if cc_budgets is None:
+        cc_val = cursor.execute("SELECT value FROM settings WHERE key = 'cc_budgets'").fetchone()
+        cc_budgets = cc_val["value"] if cc_val else json.dumps({})
+    elif not isinstance(cc_budgets, str):
+        cc_budgets = json.dumps(cc_budgets, ensure_ascii=False)
+
     cursor.execute(
-        "INSERT INTO trips (name, start_date, end_date, budget_cash, currency, credit_cards) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, start_date, end_date, budget_cash, currency, credit_cards),
+        "INSERT INTO trips (name, start_date, end_date, budget_cash, currency, credit_cards, payment_methods, companions, cc_budgets) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, start_date, end_date, budget_cash, currency, credit_cards, payment_methods, companions, cc_budgets),
     )
     conn.commit()
     trip_id = cursor.lastrowid
@@ -169,8 +246,14 @@ def get_active_trip():
 
 def update_trip(trip_id, **kwargs):
     conn = get_db()
-    allowed = ["name", "start_date", "end_date", "budget_cash", "currency", "is_active", "credit_cards"]
-    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    allowed = ["name", "start_date", "end_date", "budget_cash", "currency", "is_active", "credit_cards", "payment_methods", "companions", "cc_budgets"]
+    fields = {}
+    for k, v in kwargs.items():
+        if k in allowed:
+            if k in ["payment_methods", "companions", "cc_budgets"] and not isinstance(v, str):
+                fields[k] = json.dumps(v, ensure_ascii=False)
+            else:
+                fields[k] = v
     if not fields:
         conn.close()
         return False
@@ -185,7 +268,7 @@ def update_trip(trip_id, **kwargs):
 # ─── Receipt Operations ───
 
 def create_receipt(trip_id, store_name, date, total_amount, currency, payment_method,
-                   category, image_path, raw_json, items, note="", credit_card_name="", paid_by="管理員"):
+                   category, image_path, raw_json, items, note="", credit_card_name="", paid_by="豪"):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
