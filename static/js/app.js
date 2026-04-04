@@ -233,7 +233,7 @@ function renderPage(page) {
 //  DASHBOARD PAGE
 // ═══════════════════════════════════════════════
 async function renderDashboard(container) {
-    container.innerHTML = '<div class="page-enter"><div class="stat-grid" id="stat-cards"></div><div id="budget-section"></div><div id="cc-section"></div><div id="recent-section"></div></div>';
+    container.innerHTML = '<div class="page-enter"><div class="stat-grid" id="stat-cards"></div><div id="cc-section"></div><div id="budget-section"></div><div id="recent-section"></div></div>';
 
     try {
         const data = await api('/api/dashboard');
@@ -305,13 +305,13 @@ async function renderDashboard(container) {
         });
 
         if (payersWithCC.length > 0) {
-            const firstPayer = payersWithCC[0];
+            const defaultPayer = payersWithCC.includes('豪') ? '豪' : payersWithCC[0];
             ccSection.innerHTML = `
                 <div class="card" style="margin-bottom:20px">
                     <div class="card-title">💳 信用卡消費 — 台幣 (依付款者)</div>
                     <div class="cc-payer-tabs" style="display:flex;gap:6px;margin:10px 0;flex-wrap:wrap">
-                        ${payersWithCC.map((p, i) => `
-                            <button class="btn btn-sm cc-payer-tab ${i === 0 ? 'btn-primary' : 'btn-secondary'}" data-payer="${p}" onclick="switchCcPayerTab(this, '${p.replace(/'/g, "\\'")}')" style="font-size:0.8rem;padding:4px 12px;border-radius:20px">
+                        ${payersWithCC.map(p => `
+                            <button class="btn btn-sm cc-payer-tab ${p === defaultPayer ? 'btn-primary' : 'btn-secondary'}" data-payer="${p}" onclick="switchCcPayerTab(this, '${p.replace(/'/g, "\\'")}')" style="font-size:0.8rem;padding:4px 12px;border-radius:20px">
                                 ${getCompanionIcon(p)} ${p}
                             </button>
                         `).join('')}
@@ -319,10 +319,10 @@ async function renderDashboard(container) {
                     <div id="cc-payer-content" style="margin-top:8px"></div>
                 </div>
             `;
-            // Render first payer by default
+            // Render default payer (豪 if available)
             window._ccByPayer = ccByPayer;
             window._ccTrip = trip;
-            renderCcPayerContent(firstPayer, ccByPayer, trip);
+            renderCcPayerContent(defaultPayer, ccByPayer, trip);
         } else {
             ccSection.innerHTML = '';
         }
