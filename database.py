@@ -398,29 +398,43 @@ def get_dashboard_data(trip_id=None):
     cc_spent = []
     cc_spent_by_payer = {}
     if trip_id:
+        # Build date range filter from trip's start_date / end_date
+        trip_row = conn.execute(
+            "SELECT start_date, end_date FROM trips WHERE id = ?", (trip_id,)
+        ).fetchone()
+        date_filter = ""
+        date_params_extra = []
+        if trip_row:
+            if trip_row["start_date"]:
+                date_filter += " AND date >= ?"
+                date_params_extra.append(trip_row["start_date"])
+            if trip_row["end_date"]:
+                date_filter += " AND date <= ?"
+                date_params_extra.append(trip_row["end_date"])
+
         trip_total = conn.execute(
-            "SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ?",
-            (trip_id,)
+            f"SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ?{date_filter}",
+            (trip_id, *date_params_extra)
         ).fetchone()["total"]
         trip_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM receipts WHERE trip_id = ?",
-            (trip_id,)
+            f"SELECT COUNT(*) as cnt FROM receipts WHERE trip_id = ?{date_filter}",
+            (trip_id, *date_params_extra)
         ).fetchone()["cnt"]
         cash_spent = conn.execute(
-            "SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'cash'",
-            (trip_id,)
+            f"SELECT COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'cash'{date_filter}",
+            (trip_id, *date_params_extra)
         ).fetchone()["total"]
 
         cc_spent_raw = conn.execute(
-            "SELECT credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != '' GROUP BY credit_card_name ORDER BY total DESC",
-            (trip_id,)
+            f"SELECT credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != ''{date_filter} GROUP BY credit_card_name ORDER BY total DESC",
+            (trip_id, *date_params_extra)
         ).fetchall()
         cc_spent = [dict(r) for r in cc_spent_raw]
 
         # Credit card spending grouped by payer
         cc_by_payer_raw = conn.execute(
-            "SELECT paid_by, credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != '' GROUP BY paid_by, credit_card_name ORDER BY paid_by, total DESC",
-            (trip_id,)
+            f"SELECT paid_by, credit_card_name, COALESCE(SUM(total_amount), 0) as total FROM receipts WHERE trip_id = ? AND payment_method = 'credit_card' AND credit_card_name != ''{date_filter} GROUP BY paid_by, credit_card_name ORDER BY paid_by, total DESC",
+            (trip_id, *date_params_extra)
         ).fetchall()
         for row in cc_by_payer_raw:
             r = dict(row)
@@ -460,6 +474,16 @@ def get_stats_data(trip_id=None):
     if trip_id:
         where = "WHERE trip_id = ?"
         params = [trip_id]
+        trip_row = conn.execute(
+            "SELECT start_date, end_date FROM trips WHERE id = ?", (trip_id,)
+        ).fetchone()
+        if trip_row:
+            if trip_row["start_date"]:
+                where += " AND date >= ?"
+                params.append(trip_row["start_date"])
+            if trip_row["end_date"]:
+                where += " AND date <= ?"
+                params.append(trip_row["end_date"])
 
     # Daily trend
     daily = conn.execute(
