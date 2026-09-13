@@ -108,12 +108,21 @@ function getPayerCardNames(payer) {
 }
 
 // ─── API Helpers ───
+// Session expired or cookie cleared -> back to the login page.
+function redirectToLogin() {
+    window.location.replace('/login');
+}
+
 async function api(url, options = {}) {
     try {
         const res = await fetch(url, {
             headers: { 'Content-Type': 'application/json', ...options.headers },
             ...options,
         });
+        if (res.status === 401) {
+            redirectToLogin();
+            throw new Error('請重新登入');
+        }
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         return data;
@@ -126,6 +135,10 @@ async function api(url, options = {}) {
 async function apiUpload(url, formData) {
     try {
         const res = await fetch(url, { method: 'POST', body: formData });
+        if (res.status === 401) {
+            redirectToLogin();
+            throw new Error('請重新登入');
+        }
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         return data;
@@ -133,6 +146,17 @@ async function apiUpload(url, formData) {
         showToast(err.message, 'error');
         throw err;
     }
+}
+
+async function logout() {
+    if (!confirm('確定要登出嗎？下次進入需要重新輸入密碼。')) return;
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+        // Clearing the cookie server-side failed; sending the user to the
+        // login page is still the right move.
+    }
+    redirectToLogin();
 }
 
 // ─── Toast Notifications ───
@@ -1298,6 +1322,14 @@ async function renderSettings(container) {
                     </div>
                 </div>
                 <button class="btn btn-primary btn-full" onclick="createNewTrip()">建立旅程</button>
+            </div>
+
+            <div class="section-title" style="margin-top:24px">🔐 帳號</div>
+            <div class="card" style="margin-bottom:30px">
+                <div style="color:var(--text-muted);font-size:13px;margin-bottom:14px">
+                    這台裝置目前為登入狀態，登出後需要重新輸入密碼。
+                </div>
+                <button class="btn btn-secondary btn-full" onclick="logout()">登出</button>
             </div>
         `;
     } catch (err) {
