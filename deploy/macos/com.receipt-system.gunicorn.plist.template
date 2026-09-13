@@ -22,7 +22,7 @@
         <string>--workers</string>
         <string>2</string>
         <string>--bind</string>
-        <!-- Loopback only: cloudflared is the sole way in from outside. -->
+        <!-- Loopback only: Tailscale Funnel is the sole way in from outside. -->
         <string>127.0.0.1:__APP_PORT__</string>
         <string>--timeout</string>
         <string>120</string>

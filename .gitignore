@@ -10,3 +10,7 @@ venv/
 *.bak-*
 .DS_Store
 deploy/.drive_token.json
+
+# Production clone only
+.production
+pre-deploy-snapshots/
