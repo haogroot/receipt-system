@@ -61,6 +61,16 @@ python3 app.py
 > 開發伺服器綁在 `0.0.0.0` 並開著 `debug=True`，同一個區網或 tailnet 上的裝置都連得到，
 > 請只在可信任的網路上開啟。
 
+### 4. 測試
+```bash
+pip install -r requirements-dev.txt
+```
+```bash
+python -m pytest
+```
+- pytest 只列在 `requirements-dev.txt`，正式環境不會安裝。
+- 測試使用暫存目錄與測試用密碼，不會讀取或修改開發環境的 `.env`、DB 和 `uploads/`。
+
 ## 📂 專案結構
 - `app.py`: 主要路由與 API 邏輯。
 - `auth.py`: 登入驗證、session 與暴力破解鎖定。

@@ -13,8 +13,8 @@ from auth import init_auth
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.config.from_object(Config)
 
-# Must run before any route is served: the app is published through Cloudflare
-# Tunnel, which provides no authentication of its own.
+# Must run before any route is served: the app is published through Tailscale
+# Funnel, which provides no authentication of its own.
 init_auth(app)
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)

@@ -1,11 +1,12 @@
 """Application-level authentication gate.
 
-The app is published to the public internet through Cloudflare Tunnel, which
+The app is published to the public internet through Tailscale Funnel, which
 performs no authentication of its own — anything reachable on the local port is
 reachable by anyone. So every request has to be checked here, including static
 assets and uploaded receipt images.
 """
 
+import ipaddress
 import time
 from flask import Blueprint, jsonify, redirect, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -25,41 +26,58 @@ PUBLIC_ENDPOINTS = {
 
 # Brute-force throttling. In-memory and therefore per-worker; with 2 gunicorn
 # workers an attacker effectively gets 2x the attempts, which is still fine for
-# a password of the length we require.
+# a password of the length we require (ADR-0002).
 MAX_ATTEMPTS = 8
 ATTEMPT_WINDOW = 15 * 60   # seconds over which failures accumulate
 LOCKOUT = 15 * 60          # seconds locked out after too many failures
 
-_failures = {}  # ip -> {"count": int, "first": ts, "until": ts}
+_failures = {}  # source key -> {"count": int, "first": ts, "until": ts}
+
+# Clock used for lockout bookkeeping; tests replace it to skip ahead in time.
+_now = time.time
 
 # Resolved once at startup so a bad configuration fails loudly and immediately.
 _password_hash = None
 
 
 def _client_ip():
-    # Behind the tunnel every request arrives from cloudflared on loopback.
-    # CF-Connecting-IP is overwritten by Cloudflare's edge, so clients cannot
-    # forge it — unlike X-Forwarded-For, whose first entry is whatever the
-    # client sent and would let an attacker dodge the lockout by rotating it.
-    # Only trust it from loopback so nobody on the LAN can inject it directly.
+    # Behind Funnel every request arrives from tailscaled on loopback. Funnel
+    # overwrites X-Forwarded-For (Set, not append) with the real client address,
+    # so a client cannot forge it (ADR-0001). Only trust it from loopback so
+    # nobody on the LAN can inject it by connecting to the port directly.
     if request.remote_addr in ("127.0.0.1", "::1"):
-        cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
-        if cf_ip:
-            return cf_ip
+        forwarded = request.headers.get("X-Forwarded-For", "").strip()
+        if forwarded:
+            return forwarded
     return request.remote_addr or "unknown"
 
 
-def _lock_remaining(ip):
-    entry = _failures.get(ip)
+def _source_key(ip):
+    # A single IPv6 client typically controls a whole /64, so count failures per
+    # /64 or an attacker could rotate addresses forever. IPv4-mapped IPv6 is the
+    # same client as its IPv4 address.
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.IPv6Network((int(addr), 64), strict=False))
+    return str(addr)
+
+
+def _lock_remaining(source):
+    entry = _failures.get(source)
     if not entry:
         return 0
-    remaining = int(entry.get("until", 0) - time.time())
+    remaining = int(entry.get("until", 0) - _now())
     return remaining if remaining > 0 else 0
 
 
-def _record_failure(ip):
-    now = time.time()
-    entry = _failures.get(ip)
+def _record_failure(source):
+    now = _now()
+    entry = _failures.get(source)
     if not entry or now - entry["first"] > ATTEMPT_WINDOW:
         entry = {"count": 0, "first": now, "until": 0}
     entry["count"] += 1
@@ -67,11 +85,11 @@ def _record_failure(ip):
         entry["until"] = now + LOCKOUT
         entry["count"] = 0
         entry["first"] = now
-    _failures[ip] = entry
+    _failures[source] = entry
 
 
-def _clear_failures(ip):
-    _failures.pop(ip, None)
+def _clear_failures(source):
+    _failures.pop(source, None)
 
 
 def is_authenticated():
@@ -98,8 +116,8 @@ def login_page():
 
 @auth_bp.route("/api/auth/login", methods=["POST"])
 def login():
-    ip = _client_ip()
-    locked = _lock_remaining(ip)
+    source = _source_key(_client_ip())
+    locked = _lock_remaining(source)
     if locked:
         return jsonify({"error": f"嘗試次數過多，請於 {locked // 60 + 1} 分鐘後再試"}), 429
 
@@ -107,10 +125,10 @@ def login():
     password = data.get("password", "")
 
     if not password or not check_password_hash(_password_hash, password):
-        _record_failure(ip)
+        _record_failure(source)
         return jsonify({"error": "密碼錯誤"}), 401
 
-    _clear_failures(ip)
+    _clear_failures(source)
     _sign_in()
     return jsonify({"message": "登入成功"})
 
@@ -141,7 +159,7 @@ def init_auth(app):
         _password_hash = generate_password_hash(Config.AUTH_PASSWORD)
     else:
         # Fail closed: never start an unauthenticated service that is about to
-        # be published through the tunnel.
+        # be published through Funnel.
         raise RuntimeError(
             "未設定登入密碼。請在 .env 加入 AUTH_PASSWORD=<至少12字元的密碼>"
             "（或 AUTH_PASSWORD_HASH=<generate_password_hash 產生的雜湊>）後再啟動。"
@@ -169,10 +187,10 @@ def init_auth(app):
 
     @app.after_request
     def set_cache_headers(response):
-        # Cloudflare caches .js/.css/.jpg responses at its edge unless the
-        # origin says otherwise. Without this, a logged-in user's
-        # /uploads/<id>.jpg could be served from cache to anyone, and a login
-        # redirect for /js/app.js could be cached and break logged-in users.
+        # Keep any intermediary (proxy, shared cache) from caching authenticated
+        # content. Without this, a logged-in user's /uploads/<id>.jpg could be
+        # served from cache to someone else, and a login redirect for
+        # /js/app.js could be cached and break logged-in users.
         if (response.status_code >= 300
                 or request.path.startswith(("/api/", "/uploads/"))
                 or request.path in ("/", "/login")):
