@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon (not LaunchAgent) so the app comes back after a reboot or power
+  failure without anyone logging in. Rendered by install.sh; do not edit the
+  copy in /Library/LaunchDaemons directly.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.receipt-system.gunicorn</string>
+
+    <key>UserName</key>
+    <string>__RUN_USER__</string>
+
+    <key>WorkingDirectory</key>
+    <string>__APP_DIR__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP_DIR__/venv/bin/gunicorn</string>
+        <string>--workers</string>
+        <string>2</string>
+        <string>--bind</string>
+        <!-- Loopback only: cloudflared is the sole way in from outside. -->
+        <string>127.0.0.1:__APP_PORT__</string>
+        <string>--timeout</string>
+        <string>120</string>
+        <string>app:app</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__APP_DIR__/venv/bin:/usr/bin:/bin</string>
+        <!-- Forked gunicorn workers on macOS can crash inside Objective-C
+             runtime init (e.g. system proxy lookup) without this. -->
+        <key>OBJC_DISABLE_INITIALIZE_FORK_SAFETY</key>
+        <string>YES</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/gunicorn.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/gunicorn.err.log</string>
+</dict>
+</plist>
