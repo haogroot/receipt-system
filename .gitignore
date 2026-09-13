@@ -8,3 +8,5 @@ venv/
 .secret_key
 .env.gcloud
 *.bak-*
+.DS_Store
+deploy/.drive_token.json
