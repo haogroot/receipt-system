@@ -97,7 +97,7 @@ python -m pytest
 
 ## 🖥️ 部署（Mac mini + Tailscale Funnel）
 
-> ⚠️ 以下的 `deploy.sh`、`.production` 檢查、部署前快照與每日備份仍在實作中，
+> ⚠️ 以下的每日備份仍在實作中，
 > 設計見 [ADR-0004](docs/adr/0004-separate-production-clone-and-deploy-script.md) 與 [ADR-0005](docs/adr/0005-daily-backup-to-icloud-drive.md)。
 
 ```
@@ -157,9 +157,11 @@ tailscale funnel status
 ./deploy.sh
 ```
 `deploy.sh` 會依序做這些事：
-1. 檢查：有 commit 還沒 push、不在 `main`、正式目錄被手動改過 → 中止；開發 repo 有未 commit 的修改 → 只警告；超過 48 小時沒有成功備份 → 警告
-2. 在正式目錄 `git pull`
-3. 執行 `sudo install.sh`（需要輸入密碼）：先在 `backups/` 做一份部署前快照（保留 5 份），再跑 migration、重啟服務，最後檢查 `/healthz`
+1. 檢查（`python3 ops.py preflight`）：有 commit 還沒 push、不在 `main`、正式目錄被手動改過 → 中止，並一次列出所有原因；開發 repo 有未 commit 的修改 → 只警告；超過 48 小時沒有成功備份，或找不到備份紀錄 → 只警告
+2. 記下正式目錄目前的 commit，然後在正式目錄 `git pull --ff-only`
+3. 執行 `sudo install.sh <上一個 commit>`（需要輸入密碼）：先在 `pre-deploy-snapshots/` 做一份部署前快照（保留 5 份），再跑 migration、重啟服務，最後檢查 `/healthz`
+
+正式目錄預設是 `~/services/receipt-system`，可以用 `RECEIPT_PROD_DIR` 覆寫；備份紀錄預設讀 iCloud Drive 的 `receipt-system-backup/last-success.json`，可以用 `RECEIPT_BACKUP_ROOT` 覆寫。
 
 ### 回退
 
@@ -175,7 +177,7 @@ sudo bash deploy/macos/install.sh
 **連 DB 一起還原**：會把部署之後寫入的資料蓋掉，請先確認沒有新資料。
 ```bash
 sudo launchctl bootout system/com.receipt-system.gunicorn
-cp ~/services/receipt-system/backups/pre-deploy-<時間>-<commit>.db ~/services/receipt-system/receipt_system.db
+cp ~/services/receipt-system/pre-deploy-snapshots/pre-deploy-<時間>-<commit>.db ~/services/receipt-system/receipt_system.db
 ```
 接著照「只回退程式」的步驟重跑 `install.sh`。
 
