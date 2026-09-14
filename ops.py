@@ -1,17 +1,20 @@
-"""Operations CLI for the production deployment.
+"""Operations CLI for the production environment: deploys and the daily backup.
 
 Standard library only, so it never depends on the app's pinned packages.
 Shell scripts only call into this module; the decisions live here.
 
     python3 ops.py snapshot --db PATH --dir DIR --commit SHA
     python3 ops.py preflight [--dev DIR] [--prod DIR] [--backup-root DIR] [--now ISO]
+    python3 ops.py backup --db PATH --uploads DIR [--backup-root DIR] [--now ISO]
 
-deploy.sh runs it with the system python3 (3.9 on macOS), so keep it 3.9-compatible.
+deploy.sh and the backup LaunchAgent run it with the system python3 (3.9 on
+macOS), so keep it 3.9-compatible.
 """
 
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -19,7 +22,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SNAPSHOTS_TO_KEEP = 5
+PRE_DEPLOY_SNAPSHOTS_TO_KEEP = 5
 
 DEFAULT_PROD_DIR = Path.home() / "services" / "receipt-system"
 # Shared with the daily backup (#6): it writes BACKUP_STATUS_FILE here after
@@ -28,9 +31,15 @@ DEFAULT_BACKUP_ROOT = (Path.home() / "Library" / "Mobile Documents"
                        / "com~apple~CloudDocs" / "receipt-system-backup")
 BACKUP_STATUS_FILE = "last-success.json"
 BACKUP_MAX_AGE = timedelta(hours=48)
+DAILY_SNAPSHOTS_TO_KEEP = 14
+MONTHLY_SNAPSHOTS_TO_KEEP = 12
 
 
-def _sqlite_backup(src_path, dst_path):
+class SnapshotCheckFailed(Exception):
+    pass
+
+
+def _sqlite_backup(src_path, dst_path, check_integrity=False):
     # The backup API gives a consistent copy even while gunicorn is writing;
     # copying the file directly could capture a half-written page.
     src_uri = src_path.resolve().as_uri() + "?mode=ro"
@@ -41,6 +50,14 @@ def _sqlite_backup(src_path, dst_path):
         with closing(sqlite3.connect(src_uri, uri=True)) as src, \
                 closing(sqlite3.connect(partial)) as dst:
             src.backup(dst)
+            if check_integrity:
+                try:
+                    problems = [row[0] for row in dst.execute("PRAGMA integrity_check")]
+                except sqlite3.DatabaseError as e:
+                    # Damaged badly enough that the check itself can't run.
+                    problems = [str(e)]
+                if problems != ["ok"]:
+                    raise SnapshotCheckFailed("DB 快照沒有通過 integrity_check：" + "; ".join(problems[:5]))
         partial.replace(dst_path)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -61,7 +78,7 @@ def snapshot(db, snapshot_dir, commit):
     _sqlite_backup(db, path)
 
     existing = sorted(snapshot_dir.glob("pre-deploy-*.db"))
-    for old in existing[:-SNAPSHOTS_TO_KEEP]:
+    for old in existing[:-PRE_DEPLOY_SNAPSHOTS_TO_KEEP]:
         old.unlink()
     return path
 
@@ -159,6 +176,79 @@ def _cmd_preflight(args):
     return 0
 
 
+def _copy_new_uploads(src_dir, dst_dir):
+    """Copy photos the backup doesn't have yet. Never overwrites or deletes.
+
+    Upload names are random UUIDs, so a name already in the backup is the
+    same photo; keeping it also protects it from a deletion in the app.
+    """
+    for src in sorted(src_dir.rglob("*")):
+        if not src.is_file():
+            continue
+        dst = dst_dir / src.relative_to(src_dir)
+        if dst.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Copy under a temp name so an interrupted copy never looks backed up.
+        partial = dst.with_name(dst.name + ".partial")
+        try:
+            shutil.copy2(src, partial)
+            partial.replace(dst)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+
+
+def backup(db, uploads, backup_root, now):
+    """Take the daily backup of the production DB and uploads into `backup_root`."""
+    # A wrong path would otherwise back up no photos and still report success.
+    if not uploads.is_dir():
+        raise FileNotFoundError(f"找不到 uploads 目錄：{uploads}")
+
+    daily_dir = backup_root / "db" / "daily"
+    monthly_dir = backup_root / "db" / "monthly"
+    daily_dir.mkdir(parents=True, exist_ok=True)
+    monthly_dir.mkdir(parents=True, exist_ok=True)
+    daily = daily_dir / f"receipt_system-{now.date().isoformat()}.db"
+    _sqlite_backup(db, daily, check_integrity=True)
+
+    # The first backup of a month becomes that month's snapshot. The daily one
+    # is not in use and already checked, so copying it is safe.
+    monthly = monthly_dir / f"receipt_system-{now.strftime('%Y-%m')}.db"
+    if not monthly.exists():
+        _sqlite_backup(daily, monthly)
+
+    _copy_new_uploads(uploads, backup_root / "uploads")
+
+    # Prune only after everything succeeded, so a failed run never costs us
+    # an older backup. ISO dates sort by name.
+    for directory, keep in ((daily_dir, DAILY_SNAPSHOTS_TO_KEEP),
+                            (monthly_dir, MONTHLY_SNAPSHOTS_TO_KEEP)):
+        for old in sorted(directory.glob("receipt_system-*.db"))[:-keep]:
+            old.unlink()
+
+    # Written last and atomically: preflight trusts this file to mean every
+    # step above succeeded.
+    status = backup_root / BACKUP_STATUS_FILE
+    partial = status.with_name(status.name + ".partial")
+    last_success = now.astimezone(timezone.utc).isoformat()
+    partial.write_text(json.dumps({"last_success": last_success}) + "\n")
+    partial.replace(status)
+
+
+def _cmd_backup(args):
+    # Name snapshots by the local date the run belongs to, not the UTC one.
+    now = _parse_utc(args.now) if args.now else datetime.now().astimezone()
+    try:
+        backup(Path(args.db), Path(args.uploads), Path(args.backup_root), now)
+    except (SnapshotCheckFailed, sqlite3.Error, OSError) as e:
+        # launchd only keeps the log, so say what failed in one line.
+        print(f"❌ {now.isoformat()} 每日備份失敗，既有備份沒有更動：{e}", file=sys.stderr)
+        return 1
+    print(f"✅ {now.isoformat()} 每日備份完成：{args.backup_root}")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ops.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -181,6 +271,15 @@ def main(argv=None):
                    help="daily backup root (env: RECEIPT_BACKUP_ROOT)")
     p.add_argument("--now", help="ISO 8601 time to treat as now (for tests)")
     p.set_defaults(func=_cmd_preflight)
+
+    p = sub.add_parser("backup", help="daily backup of production data (ADR-0005)")
+    p.add_argument("--db", required=True)
+    p.add_argument("--uploads", required=True)
+    p.add_argument("--backup-root",
+                   default=os.environ.get("RECEIPT_BACKUP_ROOT", str(DEFAULT_BACKUP_ROOT)),
+                   help="daily backup root (env: RECEIPT_BACKUP_ROOT)")
+    p.add_argument("--now", help="ISO 8601 time to treat as now (for tests)")
+    p.set_defaults(func=_cmd_backup)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -97,7 +97,6 @@ python -m pytest
 
 ## 🖥️ 部署（Mac mini + Tailscale Funnel）
 
-> ⚠️ 以下的每日備份仍在實作中，
 > 設計見 [ADR-0004](docs/adr/0004-separate-production-clone-and-deploy-script.md) 與 [ADR-0005](docs/adr/0005-daily-backup-to-icloud-drive.md)。
 
 ```
@@ -150,6 +149,17 @@ tailscale funnel status
 - FileVault 關閉、macOS 自動登入開啟、Tailscale app 設為登入時啟動
 - 系統設定 → 能源 → 停電後自動重新開機
 
+**6. 安裝每日備份**（不要加 sudo）
+```bash
+bash ~/services/receipt-system/deploy/macos/install-backup.sh
+```
+```bash
+launchctl kickstart gui/$(id -u)/com.receipt-system.backup
+```
+- 裝好後手動觸發一次，確認 iCloud Drive 的 `receipt-system-backup/` 出現檔案。
+- 第一次存取 iCloud Drive 時，若跳出權限要求請按允許；若 `backup.err.log` 出現 `Operation not permitted`，到「完整磁碟取用權限」加入 `/usr/bin/python3`。
+- 修改 plist template 之後，要在正式目錄重跑一次這個腳本；`deploy.sh` 不會更新它。
+
 ### 日常部署
 
 先 commit 並 push 到 `main`，接著在**開發 repo** 執行：
@@ -189,6 +199,17 @@ cp ~/services/receipt-system/pre-deploy-snapshots/pre-deploy-<時間>-<commit>.d
 - **DB**：用 SQLite backup API 做快照並檢查完整性；每日快照保留 14 天，每月一份保留 12 個月
 - **`uploads/`**：保留原圖，只新增、不刪除
 
+```
+receipt-system-backup/
+├── db/daily/receipt_system-YYYY-MM-DD.db   最近 14 份
+├── db/monthly/receipt_system-YYYY-MM.db    每月最早的一份，最近 12 個月
+├── uploads/                                收據照片
+└── last-success.json                       {"last_success": "<UTC ISO 8601>"}
+```
+- 全部成功才會更新 `last-success.json`；失敗時不動既有備份，錯誤寫在 `~/Library/Logs/receipt-system/backup.err.log`。
+- `deploy.sh` 發現超過 48 小時沒有成功備份時會警告。
+- 從備份還原：先停掉服務，把 `db/daily/` 裡的快照複製成 `receipt_system.db`，並刪掉舊的 `-wal`／`-shm` 檔。
+
 > 不要把正在使用中的 `receipt_system.db` 直接放進 iCloud 同步，會損毀。
 
 ### 常用指令
@@ -197,6 +218,8 @@ tail -f ~/Library/Logs/receipt-system/gunicorn.err.log           # log
 sudo launchctl kickstart -k system/com.receipt-system.gunicorn   # 重啟
 sudo launchctl bootout system/com.receipt-system.gunicorn        # 停止
 tailscale funnel status                                          # Funnel 狀態
+tail -f ~/Library/Logs/receipt-system/backup.err.log             # 備份錯誤
+launchctl kickstart gui/$(id -u)/com.receipt-system.backup       # 立刻備份一次
 ```
 
 ## 🛡️ 安全提示

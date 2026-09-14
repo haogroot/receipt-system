@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent (not LaunchDaemon): iCloud Drive only syncs inside a user
+  session, and TCC is less likely to block writes to ~/Library/Mobile Documents
+  from there (ADR-0005). Rendered by install-backup.sh; do not edit the copy in
+  ~/Library/LaunchAgents directly.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.receipt-system.backup</string>
+
+    <key>WorkingDirectory</key>
+    <string>__APP_DIR__</string>
+
+    <!-- System python: ops.py is stdlib only, and a stable binary path keeps
+         any TCC permission granted to it across Homebrew upgrades. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__APP_DIR__/ops.py</string>
+        <string>backup</string>
+        <string>--db</string>
+        <string>__APP_DIR__/receipt_system.db</string>
+        <string>--uploads</string>
+        <string>__APP_DIR__/uploads</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/backup.err.log</string>
+</dict>
+</plist>
