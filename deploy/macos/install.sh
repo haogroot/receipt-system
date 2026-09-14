@@ -152,7 +152,25 @@ chmod 644 "$PLIST_DST"
 plutil -lint "$PLIST_DST" >/dev/null
 
 launchctl bootout "system/$LABEL" 2>/dev/null || true
-launchctl bootstrap system "$PLIST_DST"
+# bootout returns while gunicorn is still shutting down; bootstrapping before
+# launchd has dropped the job fails with "5: Input/output error".
+for _ in $(seq 1 30); do
+    launchctl print "system/$LABEL" >/dev/null 2>&1 || break
+    sleep 1
+done
+bootstrapped=false
+for _ in $(seq 1 5); do
+    if launchctl bootstrap system "$PLIST_DST"; then
+        bootstrapped=true
+        break
+    fi
+    sleep 2
+done
+if [ "$bootstrapped" != true ]; then
+    echo "❌ launchd 無法載入 $PLIST_DST，服務目前沒有在執行。"
+    rollback_hint
+    exit 1
+fi
 
 # 5. Health check
 echo "➤ Waiting for the app..."
