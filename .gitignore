@@ -6,10 +6,11 @@ uploads/
 venv/
 .venv/
 .secret_key
-.env.gcloud
 *.bak-*
 .DS_Store
-deploy/.drive_token.json
+
+# 旅行消費報告是個人資料，存放在 iCloud Drive
+reports/
 
 # Production clone only
 .production
