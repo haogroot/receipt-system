@@ -69,7 +69,8 @@ def main(argv=None):
     p = sub.add_parser("snapshot", help="pre-deploy snapshot of the production DB")
     p.add_argument("--db", required=True)
     p.add_argument("--dir", required=True)
-    p.add_argument("--commit", required=True)
+    p.add_argument("--commit", required=True,
+                   help="commit the DB belongs to before this deploy's migrations")
     p.set_defaults(func=_cmd_snapshot)
 
     args = parser.parse_args(argv)

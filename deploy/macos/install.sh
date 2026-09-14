@@ -121,8 +121,10 @@ as_user "$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
 
 # 3. Pre-deploy snapshot, then database migrations
 echo "➤ Pre-deploy snapshot..."
+# Name it after the commit the DB still belongs to (pre-migration), which is
+# the commit the rollback hint pairs it with.
 if ! SNAPSHOT_PATH="$(cd "$APP_DIR" && as_user "$APP_DIR/venv/bin/python" ops.py snapshot \
-        --db "$DB_PATH" --dir "$SNAPSHOT_DIR" --commit "$CURRENT_COMMIT")"; then
+        --db "$DB_PATH" --dir "$SNAPSHOT_DIR" --commit "$PREV_COMMIT")"; then
     echo "❌ 部署前快照失敗，尚未執行 migration，服務維持原狀。"
     exit 1
 fi
