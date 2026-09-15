@@ -1,6 +1,6 @@
 # ✈️ 旅行收據管家 | Travel Receipt Manager
 
-這是一個基於 AI 的旅行支出管理系統。透過 Google Gemini 2.0 Flash 模型，自動從收據照片中擷取日期、商家、金額與分類，並提供即時的數據視覺化與預算管理。
+這是一個基於 AI 的旅行支出管理系統。透過 Google Gemini 2.5 Flash 模型，自動從收據照片中擷取日期、商家、金額與分類，並提供即時的數據視覺化與預算管理。
 
 ![Dashboard Interface](https://via.placeholder.com/800x450?text=Travel+Receipt+Manager+Interface)
 
@@ -14,7 +14,7 @@
 ## 🛠️ 技術棧
 - **後端**: Python, Flask
 - **資料庫**: SQLite
-- **AI 模型**: [Google Gemini 2.0 Flash](https://aistudio.google.com/)
+- **AI 模型**: [Google Gemini 2.5 Flash](https://aistudio.google.com/)（可用 `.env` 的 `GEMINI_MODEL` 更換）
 - **前端**: HTML5, Vanilla CSS, JavaScript
 - **部署**: Gunicorn, macOS launchd, Tailscale Funnel
 
@@ -86,7 +86,7 @@ python -m pytest
 
 服務透過 Tailscale Funnel 公開在網際網路上，Funnel **本身不做任何驗證**，所以驗證完全由應用層負責（見 [ADR-0002](docs/adr/0002-auth-inside-flask-shared-password.md)）：
 
-- 除了 `/login` 與 `/healthz`，**所有路徑**（含 `/api/*`、`/uploads/*`、前端靜態檔）都需要 session cookie。
+- 除了 `/login`、`/healthz` 與登入用的 `/api/auth/*`，**所有路徑**（含 `/api/*`、`/uploads/*`、前端靜態檔）都需要 session cookie。
 - Cookie 為 `HttpOnly` + `Secure` + `SameSite=Lax` 的簽章 cookie，預設有效期 180 天且會隨使用自動延長，所以每台裝置只需要登入一次。
 - 密碼在 15 分鐘內錯 8 次，會鎖定該來源 IP 15 分鐘（IPv6 以 `/64` 為單位計算）。來源 IP 取自 Funnel 寫入的 `X-Forwarded-For`，且只在請求來自 loopback 時才採信。
 - 沒有設定 `AUTH_PASSWORD` 時服務會**拒絕啟動**，避免不小心把未驗證的服務公開出去。
@@ -132,7 +132,7 @@ touch .production
 sudo bash ~/services/receipt-system/deploy/macos/install.sh
 ```
 - 以 LaunchDaemon 執行，gunicorn 只綁 `127.0.0.1:8000`，開機後自動啟動
-- 會檢查 `.env`：沒有 `AUTH_PASSWORD` 或 `COOKIE_SECURE=false` 時拒絕安裝
+- 會檢查 `.env`：`AUTH_PASSWORD` 與 `AUTH_PASSWORD_HASH` 都沒設定，或 `COOKIE_SECURE=false` 時拒絕安裝（不會檢查密碼長度，請自行確認 ≥16 字元）
 - 第一次執行會建立空的 DB
 
 **4. 開啟 Funnel**
@@ -144,6 +144,11 @@ tailscale funnel status
 ```
 - 要寫 `127.0.0.1`，不要寫 `localhost`：macOS 可能把 `localhost` 解析成 `::1`，而 gunicorn 只聽 IPv4。
 - 開好之後，用手機（不走 Tailscale）打開 `https://<machine>.<tailnet>.ts.net` 確認能看到登入頁。
+- 登入一次後確認鎖定用的是真實 IP（[ADR-0002](docs/adr/0002-auth-inside-flask-shared-password.md)）：
+  ```bash
+  grep "login " ~/Library/Logs/receipt-system/gunicorn.err.log | tail -n 3
+  ```
+  `remote_addr` 一定是 `127.0.0.1`（tailscaled），重點是 `x_forwarded_for`：要跟手機在同一個網路下用瀏覽器打開 `https://ifconfig.me` 看到的 IP 相同。手機走行動網路時可能是 IPv6，比對前綴即可。如果看到的是 `100.x.y.z` 這種 Tailscale 位址，代表拿到的是 ingress 節點，鎖定策略需要重新討論。
 
 **5. 主機設定**（原因見 [ADR-0003](docs/adr/0003-host-on-mac-mini.md)）
 - FileVault 關閉、macOS 自動登入開啟、Tailscale app 設為登入時啟動
@@ -186,10 +191,16 @@ sudo bash deploy/macos/install.sh
 
 **連 DB 一起還原**：會把部署之後寫入的資料蓋掉，請先確認沒有新資料。
 ```bash
+cp ~/services/receipt-system/pre-deploy-snapshots/pre-deploy-<時間>-<commit>.db ~/receipt-system-restore.db
 sudo launchctl bootout system/com.receipt-system.gunicorn
-cp ~/services/receipt-system/pre-deploy-snapshots/pre-deploy-<時間>-<commit>.db ~/services/receipt-system/receipt_system.db
+cd ~/services/receipt-system
+git checkout <上一個 commit>
+rm -f receipt_system.db-wal receipt_system.db-shm
+cp ~/receipt-system-restore.db receipt_system.db
+sudo bash deploy/macos/install.sh <上一個 commit>
 ```
-接著照「只回退程式」的步驟重跑 `install.sh`。
+- 先把快照複製出來：每次跑 `install.sh` 都會再做一份快照並淘汰舊的。
+- 一定要刪掉 `-wal`／`-shm`，否則 SQLite 會把舊的 WAL 套用到還原的 DB 上，造成損毀。
 
 回退完成後，記得回到 `main` 修好問題再重新部署。
 
@@ -217,6 +228,7 @@ receipt-system-backup/
 tail -f ~/Library/Logs/receipt-system/gunicorn.err.log           # log
 sudo launchctl kickstart -k system/com.receipt-system.gunicorn   # 重啟
 sudo launchctl bootout system/com.receipt-system.gunicorn        # 停止
+grep "login " ~/Library/Logs/receipt-system/gunicorn.err.log     # 登入紀錄（含來源 IP）
 tailscale funnel status                                          # Funnel 狀態
 tail -f ~/Library/Logs/receipt-system/backup.err.log             # 備份錯誤
 launchctl kickstart gui/$(id -u)/com.receipt-system.backup       # 立刻備份一次

@@ -34,6 +34,29 @@ def test_login_with_correct_password_grants_api_access(client):
     assert client.get("/api/auth/status").get_json() == {"authenticated": True}
 
 
+def test_login_attempts_log_the_forwarded_client_and_the_peer(client, caplog):
+    # Lets the operator check in production that Funnel's X-Forwarded-For is the
+    # real client, not the ingress node (ADR-0001).
+    with caplog.at_level("INFO"):
+        login(client, "wrong-password", forwarded_for="198.51.100.5")
+        login(client, TEST_PASSWORD, forwarded_for="198.51.100.6")
+
+    messages = [r.getMessage() for r in caplog.records if r.getMessage().startswith("login ")]
+    assert messages == [
+        "login failed client='198.51.100.5' remote_addr=127.0.0.1 x_forwarded_for='198.51.100.5'",
+        "login succeeded client='198.51.100.6' remote_addr=127.0.0.1 x_forwarded_for='198.51.100.6'",
+    ]
+
+
+def test_login_log_never_contains_the_password(client, caplog):
+    with caplog.at_level("INFO"):
+        login(client, "wrong-password-in-log", forwarded_for="198.51.100.5")
+        login(client, TEST_PASSWORD, forwarded_for="198.51.100.5")
+
+    assert "wrong-password-in-log" not in caplog.text
+    assert TEST_PASSWORD not in caplog.text
+
+
 def test_funnel_client_is_locked_out_without_locking_out_other_clients(client):
     fail_logins(client, MAX_ATTEMPTS, forwarded_for="198.51.100.1")
 

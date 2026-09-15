@@ -7,8 +7,9 @@ assets and uploaded receipt images.
 """
 
 import ipaddress
+import logging
 import time
-from flask import Blueprint, jsonify, redirect, request, send_from_directory, session
+from flask import Blueprint, current_app, jsonify, redirect, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import Config
@@ -92,6 +93,18 @@ def _clear_failures(source):
     _failures.pop(source, None)
 
 
+def _log_attempt(outcome, client_ip):
+    # Record both the peer and the forwarded header so the operator can confirm
+    # in production that X-Forwarded-For is the real client and not the Funnel
+    # ingress node (ADR-0001), which would make the lockout useless (ADR-0002).
+    # %r keeps a crafted header from forging extra log lines.
+    current_app.logger.info(
+        "login %s client=%r remote_addr=%s x_forwarded_for=%r",
+        outcome, client_ip, request.remote_addr,
+        request.headers.get("X-Forwarded-For"),
+    )
+
+
 def is_authenticated():
     return session.get("auth_v") == Config.AUTH_SESSION_VERSION
 
@@ -116,9 +129,11 @@ def login_page():
 
 @auth_bp.route("/api/auth/login", methods=["POST"])
 def login():
-    source = _source_key(_client_ip())
+    client_ip = _client_ip()
+    source = _source_key(client_ip)
     locked = _lock_remaining(source)
     if locked:
+        _log_attempt("locked", client_ip)
         return jsonify({"error": f"嘗試次數過多，請於 {locked // 60 + 1} 分鐘後再試"}), 429
 
     data = request.get_json(silent=True) or {}
@@ -126,9 +141,11 @@ def login():
 
     if not password or not check_password_hash(_password_hash, password):
         _record_failure(source)
+        _log_attempt("failed", client_ip)
         return jsonify({"error": "密碼錯誤"}), 401
 
     _clear_failures(source)
+    _log_attempt("succeeded", client_ip)
     _sign_in()
     return jsonify({"message": "登入成功"})
 
@@ -174,6 +191,10 @@ def init_auth(app):
     )
 
     app.register_blueprint(auth_bp)
+
+    # Flask's logger inherits WARNING from the root logger, which would drop the
+    # login lines; under gunicorn they go to stderr, i.e. gunicorn.err.log.
+    app.logger.setLevel(logging.INFO)
 
     @app.before_request
     def require_login():
