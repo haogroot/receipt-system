@@ -1428,22 +1428,249 @@ function renderTripEdit(content, trip) {
             </div>
         </div>
 
-        <div class="section-title">💳 信用卡預算管理 (僅此旅程)</div>
+        <div class="section-title cc-section-title">
+            <span>💳 信用卡預算 (僅此旅程)</span>
+            <span id="cc-save-status" class="cc-save-status"></span>
+        </div>
         <div class="card" style="margin-bottom:30px">
-            <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:16px">每位付款者可設定各自的信用卡和預算（台幣），格式：卡名:預算，用逗號分隔。</div>
-            <div style="display:flex; flex-direction:column; gap:16px;">
-                ${tripComp.map(c => `
-                    <div style="background:var(--bg-glass);padding:12px;border-radius:var(--radius-sm);border:1px solid var(--border-glass)">
-                        <div style="font-weight:600;color:var(--text-primary);margin-bottom:8px">${getCompanionIcon(c)} ${c}</div>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <input type="text" id="edit-cc-budget-${c}" value="${tripCc[c] || ''}" class="form-input" style="flex:1;padding:6px 10px;font-size:0.85rem" placeholder="例: 國泰CUBE:50000">
-                            <button class="btn btn-secondary btn-sm" style="padding:4px 10px;white-space:nowrap" onclick="saveTripCcBudget(${trip.id}, '${c.replace(/'/g, "\'")}')">儲存</button>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
+            <div id="cc-budget-editor" class="cc-editor"></div>
         </div>
     `;
+
+    initCcBudgetEditor(trip, tripComp, tripCc);
+}
+
+// ─── Trip CC budget editor ───
+// Edits one row per card; rows are serialized back into the existing
+// "卡名:預算,卡名:預算" string per payer, so the stored format is unchanged.
+let ccEditor = null;
+
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// Separators would corrupt the serialized string, so they can't be part of a card name.
+function sanitizeCardName(name) {
+    return name.replace(/[,:，：、]/g, '');
+}
+
+function serializeCcRows(rows) {
+    return rows
+        .filter(r => r.name.trim())
+        .map(r => `${r.name.trim()}:${r.budget || 0}`)
+        .join(',');
+}
+
+function initCcBudgetEditor(trip, companions, ccObj) {
+    if (ccEditor && ccEditor.timer) flushCcSave();
+
+    ccEditor = {
+        tripId: trip.id,
+        companions,
+        rows: {},
+        spent: {},
+        timer: null,
+        chain: Promise.resolve(),
+    };
+    companions.forEach(c => {
+        ccEditor.rows[c] = Object.entries(parseCcBudgets(ccObj[c]))
+            .map(([name, budget]) => ({ name, budget }));
+    });
+
+    const el = document.getElementById('cc-budget-editor');
+    el.addEventListener('input', onCcEditorInput);
+    el.addEventListener('focusout', onCcEditorFocusOut);
+    el.addEventListener('click', onCcEditorClick);
+
+    renderCcBudgetEditor();
+    loadCcSpent(ccEditor);
+}
+
+async function loadCcSpent(editor) {
+    try {
+        const data = await api(`/api/dashboard?trip_id=${editor.tripId}`);
+        Object.entries(data.cc_spent_by_payer || {}).forEach(([payer, cards]) => {
+            editor.spent[payer] = {};
+            cards.forEach(c => { editor.spent[payer][c.credit_card_name] = toTwd(c.total); });
+        });
+        if (ccEditor === editor) renderCcBudgetEditor();
+    } catch (e) {}
+}
+
+function renderCcBudgetEditor() {
+    const el = document.getElementById('cc-budget-editor');
+    if (!el || !ccEditor) return;
+    el.innerHTML = ccEditor.companions.map(renderCcPayerBlock).join('');
+}
+
+function renderCcPayerBlock(payer) {
+    const rows = ccEditor.rows[payer];
+    const p = escapeHtml(payer);
+
+    return `
+        <div class="cc-payer" data-payer="${p}">
+            <div class="cc-payer-header">
+                <span class="cc-payer-name">${getCompanionIcon(payer)} ${p}</span>
+                <span class="cc-payer-summary">${ccPayerSummary(payer)}</span>
+            </div>
+            ${rows.length
+                ? rows.map((r, i) => renderCcRow(payer, r, i)).join('')
+                : '<div class="cc-empty">還沒設定信用卡</div>'}
+            <div class="cc-actions">${ccActionsHtml(payer)}</div>
+        </div>
+    `;
+}
+
+// Card names other payers already use, offered as one-tap chips.
+function ccActionsHtml(payer) {
+    const usedNames = new Set(ccEditor.rows[payer].map(r => r.name.trim()));
+    const suggestions = [...new Set(
+        Object.values(ccEditor.rows).flat().map(r => r.name.trim())
+    )].filter(n => n && !usedNames.has(n));
+    return `
+        <button class="btn btn-secondary btn-sm" data-action="add">＋ 新增信用卡</button>
+        ${suggestions.map(n => `<button class="cc-chip" data-action="add" data-name="${escapeHtml(n)}">＋ ${escapeHtml(n)}</button>`).join('')}
+    `;
+}
+
+function renderCcRow(payer, row, index) {
+    return `
+        <div class="cc-row" data-index="${index}">
+            <input type="text" class="form-input cc-name" value="${escapeHtml(row.name)}" placeholder="卡片名稱" maxlength="30">
+            <div class="cc-amount">
+                <span class="cc-amount-prefix">NT$</span>
+                <input type="text" class="form-input cc-budget" inputmode="numeric" value="${row.budget ? formatAmount(row.budget) : ''}" placeholder="0">
+            </div>
+            <button class="cc-delete" data-action="delete" aria-label="刪除 ${escapeHtml(row.name)}">🗑</button>
+        </div>
+        <div class="cc-progress" data-progress="${index}">${ccProgressHtml(payer, row)}</div>
+    `;
+}
+
+function ccProgressHtml(payer, row) {
+    if (!row.budget) return '';
+    const spent = (ccEditor.spent[payer] || {})[row.name.trim()] || 0;
+    const ratio = spent / row.budget;
+    const barClass = ratio >= 0.9 ? 'danger' : ratio >= 0.7 ? 'warning' : '';
+    const remaining = row.budget - spent;
+    return `
+        <div class="budget-bar-container"><div class="budget-bar ${barClass}" style="width:${Math.min(ratio, 1) * 100}%"></div></div>
+        <div class="cc-progress-text">已用 NT$ ${formatAmount(spent)} · ${remaining >= 0 ? `剩 NT$ ${formatAmount(remaining)}` : `超支 NT$ ${formatAmount(-remaining)}`}</div>
+    `;
+}
+
+function ccPayerSummary(payer) {
+    const rows = ccEditor.rows[payer].filter(r => r.name.trim());
+    if (!rows.length) return '';
+    const total = rows.reduce((s, r) => s + (r.budget || 0), 0);
+    return `${rows.length} 張卡 · 合計 NT$ ${formatAmount(total)}`;
+}
+
+function ccRowContext(target) {
+    const block = target.closest('.cc-payer');
+    const rowEl = target.closest('.cc-row');
+    if (!block) return null;
+    const payer = ccEditor.companions.find(c => c === block.dataset.payer);
+    return { block, payer, index: rowEl ? Number(rowEl.dataset.index) : -1 };
+}
+
+function onCcEditorInput(e) {
+    const ctx = ccRowContext(e.target);
+    if (!ctx || ctx.index < 0) return;
+    const row = ccEditor.rows[ctx.payer][ctx.index];
+
+    if (e.target.classList.contains('cc-name')) {
+        const clean = sanitizeCardName(e.target.value);
+        if (clean !== e.target.value) e.target.value = clean;
+        row.name = clean;
+        document.querySelectorAll('#cc-budget-editor .cc-payer').forEach(block => {
+            const payer = ccEditor.companions.find(c => c === block.dataset.payer);
+            block.querySelector('.cc-actions').innerHTML = ccActionsHtml(payer);
+        });
+    } else if (e.target.classList.contains('cc-budget')) {
+        row.budget = Number(e.target.value.replace(/[^\d]/g, '')) || 0;
+    } else {
+        return;
+    }
+
+    // Update derived text in place so the focused input keeps its caret.
+    ctx.block.querySelector(`[data-progress="${ctx.index}"]`).innerHTML = ccProgressHtml(ctx.payer, row);
+    ctx.block.querySelector('.cc-payer-summary').textContent = ccPayerSummary(ctx.payer);
+    scheduleCcSave();
+}
+
+function onCcEditorFocusOut(e) {
+    if (e.target.classList.contains('cc-budget')) {
+        const ctx = ccRowContext(e.target);
+        const row = ctx && ccEditor.rows[ctx.payer][ctx.index];
+        if (row) e.target.value = row.budget ? formatAmount(row.budget) : '';
+    }
+    if (ccEditor.timer) flushCcSave();
+}
+
+function onCcEditorClick(e) {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const ctx = ccRowContext(btn);
+    if (!ctx) return;
+    const rows = ccEditor.rows[ctx.payer];
+
+    if (btn.dataset.action === 'add') {
+        const name = btn.dataset.name || '';
+        rows.push({ name, budget: 0 });
+        renderCcBudgetEditor();
+        const block = document.querySelector(`#cc-budget-editor .cc-payer[data-payer="${CSS.escape(ctx.payer)}"]`);
+        const lastRow = block.querySelectorAll('.cc-row')[rows.length - 1];
+        lastRow.querySelector(name ? '.cc-budget' : '.cc-name').focus();
+        if (name) scheduleCcSave();
+    } else if (btn.dataset.action === 'delete') {
+        const removed = rows.splice(ctx.index, 1)[0];
+        renderCcBudgetEditor();
+        if (removed.name.trim()) scheduleCcSave();
+    }
+}
+
+function setCcSaveStatus(state) {
+    const el = document.getElementById('cc-save-status');
+    if (!el) return;
+    el.className = `cc-save-status ${state}`;
+    el.textContent = { saving: '儲存中…', saved: '✓ 已自動儲存', error: '儲存失敗，請再試一次' }[state] || '';
+}
+
+function scheduleCcSave() {
+    setCcSaveStatus('saving');
+    clearTimeout(ccEditor.timer);
+    ccEditor.timer = setTimeout(flushCcSave, 800);
+}
+
+function flushCcSave() {
+    const editor = ccEditor;
+    clearTimeout(editor.timer);
+    editor.timer = null;
+
+    const ccObj = {};
+    editor.companions.forEach(c => {
+        const str = serializeCcRows(editor.rows[c]);
+        if (str) ccObj[c] = str;
+    });
+
+    // Chain saves so an earlier, slower request can't overwrite a later one.
+    editor.chain = editor.chain.then(async () => {
+        try {
+            await api(`/api/trips/${editor.tripId}`, {
+                method: 'PUT',
+                body: JSON.stringify({ cc_budgets: ccObj }),
+            });
+            const trip = (window._trips || []).find(t => t.id === editor.tripId);
+            if (trip) {
+                trip.cc_budgets = JSON.stringify(ccObj);
+                if (trip.is_active) CC_BUDGETS = ccObj;
+            }
+            if (ccEditor === editor && !editor.timer) setCcSaveStatus('saved');
+        } catch (e) {
+            if (ccEditor === editor) setCcSaveStatus('error');
+        }
+    });
 }
 
 async function createNewTrip() {
@@ -1528,25 +1755,6 @@ window.deleteTripCompanion = async function(tripId, name) {
 
     const newList = compList.filter(c => c !== name);
     await updateTripField(tripId, 'companions', newList);
-};
-
-window.saveTripCcBudget = async function(tripId, payerName) {
-    const trip = window._trips.find(t => t.id === tripId);
-    let ccObj = trip.cc_budgets ? JSON.parse(trip.cc_budgets) : { ...CC_BUDGETS };
-    
-    const input = document.getElementById(`edit-cc-budget-${payerName}`);
-    if (!input) return;
-    
-    ccObj[payerName] = input.value.trim();
-    
-    // Cleanup: only keep budgets for people in the current trip companions list
-    const companions = trip.companions ? JSON.parse(trip.companions) : COMPANIONS;
-    const cleanedCcObj = {};
-    companions.forEach(c => {
-        if (ccObj[c]) cleanedCcObj[c] = ccObj[c];
-    });
-    
-    await updateTripField(tripId, 'cc_budgets', cleanedCcObj);
 };
 
 async function updateTripField(tripId, fieldName, value) {
