@@ -61,6 +61,12 @@ function formatTwd(amountJpy) {
     return `NT$ ${formatAmount(toTwd(amountJpy))}`;
 }
 
+// Helper: the trip receipts are filed under. Mirrors database.get_active_trip:
+// falls back to the newest trip (/api/trips is newest-first) when none is active.
+function findActiveTrip(trips) {
+    return trips.find(t => t.is_active) || trips[0] || null;
+}
+
 // Helper: parse a payer's cc budget string into { cardName: budgetAmount }
 function parseCcBudgets(budgetStr) {
     const result = {};
@@ -685,8 +691,8 @@ async function handleFileUpload(files) {
         try {
             const result = await apiUpload('/api/receipts/upload', formData);
             const trips = await api('/api/trips');
-            const activeTrip = trips.find(t => t.is_active) || null;
-            
+            const activeTrip = findActiveTrip(trips);
+
             hideLoading();
             showToast('收據辨識成功！', 'success');
             showReceiptPreview(result, file, activeTrip);
@@ -1061,7 +1067,7 @@ async function showReceiptDetail(receiptId) {
             api(`/api/receipts/${receiptId}`),
             api('/api/trips')
         ]);
-        const activeTrip = trips.find(t => t.is_active) || null;
+        const activeTrip = findActiveTrip(trips);
 
         let ccOptionsHtml = '';
         if (r.payment_method === 'credit_card') {
@@ -1257,6 +1263,7 @@ async function renderSettings(container) {
         }
 
         const isLight = getCurrentTheme() === 'light';
+        const currentTrip = findActiveTrip(trips);
         content.innerHTML = `
             <div class="section-title">🎨 外觀設定</div>
             <div class="theme-toggle-row">
@@ -1276,9 +1283,9 @@ async function renderSettings(container) {
             <div class="section-title" style="margin-top:24px">✈️ 旅程管理</div>
             <div style="margin-bottom:20px">
                 ${trips.length > 0 ? trips.map(t => `
-                    <div class="trip-card ${t.is_active ? 'active' : ''}" style="display:flex;align-items:center;">
+                    <div class="trip-card ${t === currentTrip ? 'active' : ''}" style="display:flex;align-items:center;">
                         <div onclick="setActiveTrip(${t.id}, ${!t.is_active})" style="flex:1;cursor:pointer">
-                            <div class="trip-card-name">${t.is_active ? '✅ ' : ''}${t.name}</div>
+                            <div class="trip-card-name">${t === currentTrip ? '✅ ' : ''}${t.name}</div>
                             <div class="trip-card-dates">${t.start_date || ''} ~ ${t.end_date || ''}</div>
                             ${t.budget_cash > 0 ? `<div class="trip-card-budget" style="margin-bottom:8px">現金預算: ${formatAmount(t.budget_cash)} ${t.currency}</div>` : ''}
                         </div>
@@ -1661,10 +1668,11 @@ function flushCcSave() {
                 method: 'PUT',
                 body: JSON.stringify({ cc_budgets: ccObj }),
             });
-            const trip = (window._trips || []).find(t => t.id === editor.tripId);
+            const trips = window._trips || [];
+            const trip = trips.find(t => t.id === editor.tripId);
             if (trip) {
                 trip.cc_budgets = JSON.stringify(ccObj);
-                if (trip.is_active) CC_BUDGETS = ccObj;
+                if (findActiveTrip(trips) === trip) CC_BUDGETS = ccObj;
             }
             if (ccEditor === editor && !editor.timer) setCcSaveStatus('saved');
         } catch (e) {
@@ -1808,15 +1816,16 @@ async function showTripSelector() {
         const title = modal.querySelector('h2');
         title.textContent = '切換目前旅程';
         
+        const currentTrip = findActiveTrip(trips);
         body.innerHTML = `
             <div class="trip-selector-list">
                 ${trips.map(t => `
-                    <div class="trip-selector-item ${t.is_active ? 'active' : ''}" onclick="selectTrip(${t.id})">
+                    <div class="trip-selector-item ${t === currentTrip ? 'active' : ''}" onclick="selectTrip(${t.id})">
                         <div class="trip-selector-info">
-                            <div class="trip-selector-name">${t.is_active ? '✅ ' : ''}${t.name}</div>
+                            <div class="trip-selector-name">${t === currentTrip ? '✅ ' : ''}${t.name}</div>
                             <div class="trip-selector-dates">${t.start_date || ''} ~ ${t.end_date || ''}</div>
                         </div>
-                        <div class="trip-selector-check">${t.is_active ? '目前' : '切換'}</div>
+                        <div class="trip-selector-check">${t === currentTrip ? '目前' : '切換'}</div>
                     </div>
                 `).join('')}
             </div>
@@ -1836,8 +1845,8 @@ async function showTripSelector() {
 async function updateGlobalsFromActiveTrip() {
     try {
         const trips = await api('/api/trips');
-        const activeTrip = trips.find(t => t.is_active);
-        
+        const activeTrip = findActiveTrip(trips);
+
         if (activeTrip) {
             if (activeTrip.payment_methods) {
                 PAYMENT_METHODS = JSON.parse(activeTrip.payment_methods);

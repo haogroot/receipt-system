@@ -232,14 +232,23 @@ def create_trip(name, start_date=None, end_date=None, budget_cash=0, currency="J
 
 def get_trips():
     conn = get_db()
-    trips = conn.execute("SELECT * FROM trips ORDER BY created_at DESC").fetchall()
+    trips = conn.execute("SELECT * FROM trips ORDER BY created_at DESC, id DESC").fetchall()
     conn.close()
     return [dict(t) for t in trips]
 
 
 def get_active_trip():
+    """The trip receipts are filed under.
+
+    Nothing marks a trip inactive except tapping it in settings, so "no active
+    trip" is easy to reach by accident. Fall back to the newest trip instead of
+    orphaning receipts and hiding the trip's credit cards. The frontend
+    (findActiveTrip) applies the same rule.
+    """
     conn = get_db()
-    trip = conn.execute("SELECT * FROM trips WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1").fetchone()
+    trip = conn.execute("SELECT * FROM trips WHERE is_active = 1 ORDER BY created_at DESC, id DESC LIMIT 1").fetchone()
+    if not trip:
+        trip = conn.execute("SELECT * FROM trips ORDER BY created_at DESC, id DESC LIMIT 1").fetchone()
     conn.close()
     return dict(trip) if trip else None
 
