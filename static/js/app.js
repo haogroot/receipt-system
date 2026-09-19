@@ -1075,8 +1075,9 @@ async function showReceiptDetail(receiptId) {
             const payerCards = getPayerCardNames(payer);
             if (payerCards.length > 0) {
                 ccOptionsHtml = `
-                    <div style="margin-bottom:12px">
-                        <select class="form-select" style="font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCardDetail(${r.id}, this.value)">
+                    <div class="form-group">
+                        <label class="form-label">💳 使用信用卡</label>
+                        <select class="form-select" onchange="updateReceiptCardDetail(${r.id}, this.value)">
                             <option value="">-- 指定信用卡 --</option>
                             ${payerCards.map(c => `<option value="${c}" ${r.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
                         </select>
@@ -1086,7 +1087,24 @@ async function showReceiptDetail(receiptId) {
         }
 
         body.innerHTML = `
-            ${r.image_path ? `<img src="/uploads/${r.image_path}" class="image-preview" alt="receipt">` : ''}
+            <div class="form-group">
+                <label class="form-label">💳 付款方式</label>
+                <div class="payment-method-chips">
+                    ${PAYMENT_METHODS.map(pm => `
+                        <button type="button" class="chip ${pm.id === r.payment_method ? 'active' : ''}" onclick="updatePaymentMethod(${r.id}, '${pm.id}')">
+                            ${pm.label}
+                        </button>
+                    `).join('')}
+                </div>
+            </div>
+            ${ccOptionsHtml}
+            <div class="form-group">
+                <label class="form-label">👤 付款者</label>
+                <select class="form-select" onchange="updateReceiptPaidByDetail(${r.id}, this.value)">
+                    <option value="">-- 由誰付款 --</option>
+                    ${COMPANIONS.map(c => `<option value="${c}" ${(r.paid_by || '豪') === c ? 'selected' : ''}>${getCompanionIcon(c)} ${c}</option>`).join('')}
+                </select>
+            </div>
             <div class="receipt-preview-card" style="border:none;background:transparent">
                 <div class="receipt-preview-header" style="padding:0 0 12px">
                     <div>
@@ -1108,28 +1126,30 @@ async function showReceiptDetail(receiptId) {
                     <span class="receipt-total-amount">${r.currency || '¥'} ${formatAmount(r.total_amount)} <small style="font-size: 0.7em; opacity: 0.8; font-weight: 500; margin-left: 4px;">(${formatTwd(r.total_amount)})</small></span>
                 </div>
                 <div class="receipt-meta" style="padding:0;margin-bottom:8px;flex-wrap:wrap">
-                    <span class="receipt-tag payment" style="cursor:pointer" onclick="changePaymentMethod(${r.id}, '${r.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[r.payment_method] || r.payment_method}</span>
                     <span class="receipt-tag category">${CATEGORY_EMOJI[r.category] || ''} ${r.category || '其他'}</span>
                     <span class="receipt-tag">${r.currency || ''}</span>
-                    ${r.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${r.credit_card_name}</span>` : ''}
-                </div>
-                ${ccOptionsHtml}
-                <div style="margin-bottom:12px">
-                    <select class="form-select" style="font-size:0.85rem;padding:4px 8px" onchange="updateReceiptPaidByDetail(${r.id}, this.value)">
-                        <option value="">-- 由誰付款 --</option>
-                        ${COMPANIONS.map(c => `<option value="${c}" ${(r.paid_by || '豪') === c ? 'selected' : ''}>${getCompanionIcon(c)} ${c}</option>`).join('')}
-                    </select>
                 </div>
                 ${r.note ? `<div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">📝 ${r.note}</div>` : ''}
                 <div style="display:flex;gap:8px">
                     <button class="btn btn-danger btn-sm" onclick="deleteReceiptConfirm(${r.id})">🗑️ 刪除</button>
                 </div>
             </div>
+            ${r.image_path ? `
+                <button type="button" class="btn btn-secondary btn-full" style="margin-top:16px" onclick="toggleReceiptPhoto(this)">📷 查看收據照片</button>
+                <img data-src="/uploads/${r.image_path}" class="image-preview hidden" style="margin:16px 0 0" alt="receipt">
+            ` : ''}
         `;
     } catch (err) {
         body.innerHTML = '<div class="empty-state"><span class="empty-state-icon">⚠️</span><div class="empty-state-title">載入失敗</div></div>';
     }
 }
+
+window.toggleReceiptPhoto = function(btn) {
+    const img = btn.nextElementSibling;
+    if (!img.src) img.src = img.dataset.src;
+    const show = img.classList.toggle('hidden') === false;
+    btn.textContent = show ? '🙈 隱藏收據照片' : '📷 查看收據照片';
+};
 
 async function deleteReceiptConfirm(receiptId) {
     if (!confirm('確定要刪除這張收據嗎？')) return;

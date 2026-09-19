@@ -1238,6 +1238,10 @@ body {
     margin-bottom: 16px;
 }
 
+.image-preview.hidden {
+    display: none;
+}
+
 /* ─── Trip Card ─── */
 .trip-card {
     padding: 14px;
