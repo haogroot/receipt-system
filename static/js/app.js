@@ -1254,6 +1254,13 @@ window.changePaymentMethod = function(receiptId, currentMethod) {
     `;
 };
 
+// The post-recognition preview is a snapshot of the upload response, so it goes
+// stale once the receipt is edited from elsewhere; redraw it from the server.
+async function refreshReceiptPreview(receiptId) {
+    if (!document.getElementById(`preview-cc-container-${receiptId}`)) return;
+    showReceiptPreview(await api(`/api/receipts/${receiptId}`), null);
+}
+
 window.updateTaxFree = async function(receiptId, taxFree) {
     try {
         await api(`/api/receipts/${receiptId}`, {
@@ -1281,6 +1288,7 @@ window.updatePaymentMethod = async function(receiptId, pmId) {
         if (!rModal.classList.contains('hidden')) {
             showReceiptDetail(receiptId);
         }
+        await refreshReceiptPreview(receiptId);
     } catch(e) {}
 };
 
