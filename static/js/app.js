@@ -197,6 +197,11 @@ function formatAmount(amount, currency = '') {
     return currency ? `${currency} ${formatted}` : formatted;
 }
 
+// Receipts whose amount is already the tax-exempt price get a small pill in lists.
+function taxFreeBadge(receipt) {
+    return receipt.tax_free ? ' <span class="tax-free-badge">免稅</span>' : '';
+}
+
 function formatDate(dateStr) {
     if (!dateStr) return '未知日期';
     return dateStr;
@@ -370,7 +375,7 @@ async function renderDashboard(container) {
                             </div>
                             <div class="receipt-list-info">
                                 <div class="receipt-list-store">${r.store_name || '未知店家'}</div>
-                                <div class="receipt-list-date">${relativeDate(r.date)} · ${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}</div>
+                                <div class="receipt-list-date">${relativeDate(r.date)} · ${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}${taxFreeBadge(r)}</div>
                             </div>
                             <div class="receipt-list-amount">
                                 <div class="amount-main">¥ ${formatAmount(r.total_amount)}</div>
@@ -744,6 +749,7 @@ function showReceiptPreview(data, file, activeTrip) {
                 <div class="receipt-meta" style="flex-wrap:wrap">
                     <span class="receipt-tag payment" style="cursor:pointer" onclick="changePaymentMethod(${data.id}, '${data.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[data.payment_method] || data.payment_method}</span>
                     <span class="receipt-tag category">${CATEGORY_EMOJI[data.category] || ''} ${data.category || '其他'}</span>
+                    ${data.tax_free ? '<span class="receipt-tag tax-free">🛃 免稅後價格</span>' : ''}
                     <span class="receipt-tag">${data.currency || 'JPY'}</span>
                     ${data.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${data.credit_card_name}</span>` : ''}
                 </div>
@@ -1034,7 +1040,7 @@ async function renderHistory(container) {
                         </div>
                         <div class="receipt-list-info">
                             <div class="receipt-list-store">${r.store_name || '未知店家'}</div>
-                            <div class="receipt-list-date">${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}</div>
+                            <div class="receipt-list-date">${PAYMENT_LABELS[r.payment_method] || r.payment_method}${r.credit_card_name ? ` (${r.credit_card_name})` : ''}${taxFreeBadge(r)}</div>
                         </div>
                         <div class="receipt-list-amount">
                             <div class="amount-main">¥ ${formatAmount(r.total_amount)}</div>
@@ -1104,6 +1110,13 @@ async function showReceiptDetail(receiptId) {
                     <option value="">-- 由誰付款 --</option>
                     ${COMPANIONS.map(c => `<option value="${c}" ${(r.paid_by || '豪') === c ? 'selected' : ''}>${getCompanionIcon(c)} ${c}</option>`).join('')}
                 </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">🛃 價格類型</label>
+                <div class="payment-method-chips">
+                    <button type="button" class="chip ${r.tax_free ? '' : 'active'}" onclick="updateTaxFree(${r.id}, false)">一般價格</button>
+                    <button type="button" class="chip ${r.tax_free ? 'active' : ''}" onclick="updateTaxFree(${r.id}, true)">免稅後價格</button>
+                </div>
             </div>
             <div class="receipt-preview-card" style="border:none;background:transparent">
                 <div class="receipt-preview-header" style="padding:0 0 12px">
@@ -1239,6 +1252,19 @@ window.changePaymentMethod = function(receiptId, currentMethod) {
             `).join('')}
         </div>
     `;
+};
+
+window.updateTaxFree = async function(receiptId, taxFree) {
+    try {
+        await api(`/api/receipts/${receiptId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ tax_free: taxFree })
+        });
+        showToast('價格類型已更新', 'success');
+        if (currentPage === 'dashboard') renderPage('dashboard');
+        else if (currentPage === 'history') renderPage('history');
+        showReceiptDetail(receiptId);
+    } catch(e) {}
 };
 
 window.updatePaymentMethod = async function(receiptId, pmId) {

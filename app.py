@@ -81,6 +81,7 @@ def upload_receipt():
             items=result.get("items", []),
             credit_card_name=result.get("credit_card_name", ""),
             paid_by=result.get("paid_by", "豪"),
+            tax_free=result.get("tax_free", False),
         )
 
         result["id"] = receipt_id
@@ -142,6 +143,7 @@ def confirm_receipt():
         note=data.get("note", ""),
         credit_card_name=data.get("credit_card_name", ""),
         paid_by=data.get("paid_by", "豪"),
+        tax_free=data.get("tax_free", False),
     )
 
     return jsonify({"id": receipt_id, "message": "Receipt saved"}), 201

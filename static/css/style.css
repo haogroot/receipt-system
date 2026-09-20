@@ -779,6 +779,26 @@ body {
     border-color: rgba(245, 158, 11, 0.2);
 }
 
+.receipt-tag.tax-free {
+    background: rgba(var(--accent-info-rgb), 0.1);
+    color: var(--accent-info);
+    border-color: rgba(var(--accent-info-rgb), 0.25);
+}
+
+.tax-free-badge {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 6px;
+    border-radius: var(--radius-full);
+    font-size: 0.65rem;
+    font-weight: 600;
+    line-height: 1.5;
+    background: rgba(var(--accent-info-rgb), 0.12);
+    color: var(--accent-info);
+    border: 1px solid rgba(var(--accent-info-rgb), 0.25);
+    vertical-align: 1px;
+}
+
 .receipt-actions {
     display: flex;
     gap: 8px;

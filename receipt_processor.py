@@ -21,6 +21,10 @@ RECEIPT_PROMPT = """你是一位專業的發票與收據處理專家。請精準
    - "住宿"（旅館、飯店）
    - "娛樂"（門票、遊樂園）
    - "其他"
+6. **免稅辨識**：tax_free 表示收據上的金額「已經是免稅後的價格」
+   - 出現「免税」「免税販売」「消費税免除」「Tax Free」「Tax-Free」「Tax Exempt」等字樣，且金額已扣除消費稅 → true
+   - 一般含稅收據，或只是「可事後退稅」（Tax Refund、VAT Refund、免税対象額、退稅資格）但實付金額仍含稅 → false
+   - 無法判斷 → false
 
 必須回傳的 JSON 格式：
 ```json
@@ -38,14 +42,16 @@ RECEIPT_PROMPT = """你是一位專業的發票與收據處理專家。請精準
   "total_amount": 100,
   "currency": "JPY",
   "payment_method": "cash",
-  "category": "餐飲"
+  "category": "餐飲",
+  "tax_free": false
 }
 ```
 
 注意事項：
 - 如果無法辨識某個欄位，請合理推測或填入 null
 - items 的 amount 應為 quantity × unit_price
-- total_amount 應為所有 items 的 amount 加總（若有稅額請包含）
+- total_amount 應為所有 items 的 amount 加總（若有稅額請包含）；免稅收據則以實際支付的免稅後金額為準
+- tax_free 只能是 true 或 false
 - currency 使用 ISO 4217 貨幣代碼（如 JPY, USD, TWD, EUR, KRW 等）
 - 只回傳 JSON，不要有任何多餘文字
 
@@ -121,6 +127,7 @@ def _normalize_receipt(data: dict) -> dict:
         "currency": "JPY",
         "payment_method": "cash",
         "category": "其他",
+        "tax_free": False,
     }
 
     for key, default in defaults.items():
@@ -135,6 +142,12 @@ def _normalize_receipt(data: dict) -> dict:
         data["payment_method"] = "ic_card"
     else:
         data["payment_method"] = "cash"
+
+    # The model may answer with a bool, a number or the string "true"/"false"
+    tax_free = data["tax_free"]
+    if isinstance(tax_free, str):
+        tax_free = tax_free.strip().lower() in ("true", "yes", "1")
+    data["tax_free"] = bool(tax_free)
 
     # Normalize category
     valid_categories = ["餐飲", "交通", "購物", "住宿", "娛樂", "其他"]
