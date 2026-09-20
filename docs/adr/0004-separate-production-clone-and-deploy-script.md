@@ -19,6 +19,7 @@
 3. `install.sh` 在正式目錄找不到不進 git 的 `.production` 標記檔就拒絕執行，避免有人在開發目錄誤跑，把正式服務指到開發資料。
 4. migration 之前，先用 SQLite backup API 做一份部署前快照，保留最近 5 份。
 5. 如果 `/healthz` 沒有回應，**不自動回退**，只印出上一個 commit、快照路徑和回退指令。自動還原快照可能會把失敗前已經寫入的資料蓋掉。
+6. 安裝成功後，用公網 DNS 檢查 Funnel 網址是否查得到。`/healthz` 只走 loopback，Funnel 對外的 DNS 記錄消失時它照樣正常，外部網路卻連不進來（2026-09 發生過一次，`tailscale funnel reset` 後恢復）。這一步只警告，不自動修復：原因不明時自動 reset 只會蓋住問題。
 
 ## Consequences
 

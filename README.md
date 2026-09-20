@@ -175,8 +175,9 @@ launchctl kickstart gui/$(id -u)/com.receipt-system.backup
 1. 檢查（`python3 ops.py preflight`）：有 commit 還沒 push、不在 `main`、正式目錄被手動改過 → 中止，並一次列出所有原因；開發 repo 有未 commit 的修改 → 只警告；超過 48 小時沒有成功備份，或找不到備份紀錄 → 只警告
 2. 記下正式目錄目前的 commit，然後在正式目錄 `git pull --ff-only`
 3. 執行 `sudo install.sh <上一個 commit>`（需要輸入密碼）：先在 `pre-deploy-snapshots/` 做一份部署前快照（保留 5 份），再跑 migration、重啟服務，最後檢查 `/healthz`
+4. 檢查 Funnel 對外 DNS（`python3 ops.py funnel-check`）：`/healthz` 只測得到本機的 `127.0.0.1:8000`，所以另外用公網 DNS（`1.1.1.1`、`8.8.8.8`）查 Funnel 網址。查不到就印出警告和修復指令（`tailscale funnel reset && tailscale funnel --bg http://127.0.0.1:8000`），只警告、不影響部署結果；連不到公網 DNS 時只會說「無法確認」
 
-正式目錄預設是 `~/services/receipt-system`，可以用 `RECEIPT_PROD_DIR` 覆寫；備份紀錄預設讀 iCloud Drive 的 `receipt-system-backup/last-success.json`，可以用 `RECEIPT_BACKUP_ROOT` 覆寫。
+正式目錄預設是 `~/services/receipt-system`，可以用 `RECEIPT_PROD_DIR` 覆寫；備份紀錄預設讀 iCloud Drive 的 `receipt-system-backup/last-success.json`，可以用 `RECEIPT_BACKUP_ROOT` 覆寫；Funnel 網址預設取自 `tailscale status`，可以用 `RECEIPT_FUNNEL_HOST` 覆寫。
 
 ### 回退
 
@@ -230,6 +231,7 @@ sudo launchctl kickstart -k system/com.receipt-system.gunicorn   # 重啟
 sudo launchctl bootout system/com.receipt-system.gunicorn        # 停止
 grep "login " ~/Library/Logs/receipt-system/gunicorn.err.log     # 登入紀錄（含來源 IP）
 tailscale funnel status                                          # Funnel 狀態
+python3 ops.py funnel-check                                      # Funnel 網址在公網 DNS 上是否查得到
 tail -f ~/Library/Logs/receipt-system/backup.err.log             # 備份錯誤
 launchctl kickstart gui/$(id -u)/com.receipt-system.backup       # 立刻備份一次
 ```

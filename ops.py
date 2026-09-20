@@ -5,6 +5,7 @@ Shell scripts only call into this module; the decisions live here.
 
     python3 ops.py snapshot --db PATH --dir DIR --commit SHA
     python3 ops.py preflight [--dev DIR] [--prod DIR] [--backup-root DIR] [--now ISO]
+    python3 ops.py funnel-check [--host NAME] [--resolver IP[:PORT]]... [--timeout SECONDS]
     python3 ops.py backup --db PATH --uploads DIR [--backup-root DIR] [--now ISO]
 
 deploy.sh and the backup LaunchAgent run it with the system python3 (3.9 on
@@ -15,7 +16,9 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 from contextlib import closing
@@ -33,6 +36,13 @@ BACKUP_STATUS_FILE = "last-success.json"
 BACKUP_MAX_AGE = timedelta(hours=48)
 DAILY_SNAPSHOTS_TO_KEEP = 14
 MONTHLY_SNAPSHOTS_TO_KEEP = 12
+
+# Public resolvers, not the system one: on this Mac MagicDNS answers the Funnel
+# hostname with the tailnet IP, so it looks fine even when the public record
+# (the one phones on other networks use) is gone.
+PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8")
+DNS_TIMEOUT = 3.0
+FUNNEL_REPAIR = "tailscale funnel reset && tailscale funnel --bg http://127.0.0.1:8000"
 
 
 class SnapshotCheckFailed(Exception):
@@ -176,6 +186,85 @@ def _cmd_preflight(args):
     return 0
 
 
+def _dns_lookup(name, resolver, timeout):
+    """Ask one resolver for the A record of `name`: "found", "missing" or "no reply".
+
+    Plain UDP DNS, so this stays standard library only. "missing" means the
+    resolver answered that the name has no address (NXDOMAIN or empty).
+    """
+    host, _, port = resolver.partition(":")
+    query_id = os.urandom(2)
+    # Header: recursion desired, one question, nothing else.
+    header = query_id + struct.pack("!HHHHH", 0x0100, 1, 0, 0, 0)
+    labels = name.rstrip(".").split(".")
+    question = (b"".join(bytes([len(label)]) + label.encode("ascii") for label in labels)
+                + b"\0" + struct.pack("!HH", 1, 1))  # type A, class IN
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.sendto(header + question, (host, int(port) if port else 53))
+            reply, _ = sock.recvfrom(512)
+    except OSError:
+        return "no reply"
+    if len(reply) < 12 or reply[:2] != query_id:
+        return "no reply"
+    _, flags, _, answers, _, _ = struct.unpack("!HHHHHH", reply[:12])
+    return "found" if (flags & 0xF) == 0 and answers > 0 else "missing"
+
+
+def funnel_dns_status(host, resolvers, timeout):
+    """Return "ok", "missing" or "unknown" for the Funnel hostname on public DNS.
+
+    One resolver that can see the name is enough. "missing" needs at least one
+    resolver to say so; if none replied at all we can't tell, and that must not
+    be reported as an outage.
+    """
+    missing = False
+    for resolver in resolvers:
+        result = _dns_lookup(host, resolver, timeout)
+        if result == "found":
+            return "ok"
+        missing = missing or result == "missing"
+    return "missing" if missing else "unknown"
+
+
+def _tailscale_dns_name():
+    """Return this node's Funnel hostname from tailscale, or None."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout)["Self"]["DNSName"].rstrip(".") or None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _cmd_funnel_check(args):
+    host = args.host or _tailscale_dns_name()
+    if not host:
+        print("⚠️  警告：找不到 Funnel 網址（tailscale status 失敗），略過對外連線檢查；"
+              "可用 RECEIPT_FUNNEL_HOST 指定", file=sys.stderr)
+        return 0
+    resolvers = (args.resolver
+                 or [r for r in os.environ.get("RECEIPT_FUNNEL_RESOLVERS", "").split(",") if r]
+                 or list(PUBLIC_RESOLVERS))
+    status = funnel_dns_status(host, resolvers, args.timeout)
+    if status == "ok":
+        print(f"✅ Funnel 對外 DNS 正常：{host}")
+    elif status == "missing":
+        # /healthz only proves the app runs on loopback. If the public record is
+        # gone, phones on other networks can't even resolve the hostname.
+        print(f"⚠️  警告：公網 DNS 查不到 {host}，外部網路（如手機行動網路）目前連不進來。\n"
+              f"   可以先執行：{FUNNEL_REPAIR}\n"
+              "   （剛重設過的話，公網 DNS 可能要幾分鐘才會更新）", file=sys.stderr)
+    else:
+        print(f"⚠️  警告：無法確認 Funnel 對外 DNS（連不到公網 DNS：{', '.join(resolvers)}）",
+              file=sys.stderr)
+    # Advisory only: the deploy itself already succeeded.
+    return 0
+
+
 def _copy_new_uploads(src_dir, dst_dir):
     """Copy photos the backup doesn't have yet. Never overwrites or deletes.
 
@@ -271,6 +360,18 @@ def main(argv=None):
                    help="daily backup root (env: RECEIPT_BACKUP_ROOT)")
     p.add_argument("--now", help="ISO 8601 time to treat as now (for tests)")
     p.set_defaults(func=_cmd_preflight)
+
+    p = sub.add_parser("funnel-check",
+                       help="after a deploy, warn if the Funnel hostname is missing from public DNS")
+    p.add_argument("--host", default=os.environ.get("RECEIPT_FUNNEL_HOST"),
+                   help="Funnel hostname (env: RECEIPT_FUNNEL_HOST; default: this node's name "
+                        "from `tailscale status`)")
+    p.add_argument("--resolver", action="append",
+                   help="public DNS server as IP[:PORT], repeatable "
+                        "(env: RECEIPT_FUNNEL_RESOLVERS, comma-separated; default: 1.1.1.1, 8.8.8.8)")
+    p.add_argument("--timeout", type=float, default=DNS_TIMEOUT,
+                   help="seconds to wait for each resolver")
+    p.set_defaults(func=_cmd_funnel_check)
 
     p = sub.add_parser("backup", help="daily backup of production data (ADR-0005)")
     p.add_argument("--db", required=True)

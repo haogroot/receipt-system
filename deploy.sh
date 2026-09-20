@@ -4,6 +4,7 @@
 #  Usage:  ./deploy.sh        (run from the development repo)
 #  RECEIPT_PROD_DIR overrides the production clone (default ~/services/receipt-system);
 #  RECEIPT_BACKUP_ROOT overrides where the daily backup status lives.
+#  RECEIPT_FUNNEL_HOST overrides the Funnel hostname (default: from `tailscale status`).
 # ═══════════════════════════════════════════════
 set -euo pipefail
 
@@ -26,3 +27,8 @@ fi
 # 3. Install. Asks for the password every time; no NOPASSWD rule on purpose.
 echo "➤ sudo install.sh..."
 sudo bash "$PROD_DIR/deploy/macos/install.sh" "$PREV_COMMIT"
+
+# 4. install.sh's /healthz check only reaches 127.0.0.1, so also check that the
+#    Funnel hostname is on public DNS. It only warns: the deploy has succeeded.
+echo "➤ Funnel 對外 DNS..."
+python3 "$DEV_DIR/ops.py" funnel-check || true

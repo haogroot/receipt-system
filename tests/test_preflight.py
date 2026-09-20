@@ -217,39 +217,54 @@ def fake_sudo(tmp_path):
     return bin_dir, log
 
 
-def run_deploy(repos, fake_sudo):
+def funnel_env_for(dns):
+    """Point deploy.sh's Funnel check at a local fake DNS server."""
+    return {"RECEIPT_FUNNEL_HOST": "receipt.example.ts.net",
+            "RECEIPT_FUNNEL_RESOLVERS": dns.address}
+
+
+@pytest.fixture
+def funnel_env(dns_server):
+    """By default the Funnel hostname is on public DNS, so deploys stay hermetic."""
+    return funnel_env_for(dns_server("answer"))
+
+
+def run_deploy(repos, fake_sudo, funnel_env):
     bin_dir, _ = fake_sudo
     return subprocess.run(
         ["bash", str(repos.dev / "deploy.sh")], cwd=repos.dev,
         env={**GIT_ENV, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
              "RECEIPT_PROD_DIR": str(repos.prod),
-             "RECEIPT_BACKUP_ROOT": str(repos.backup_root)},
+             "RECEIPT_BACKUP_ROOT": str(repos.backup_root),
+             **funnel_env},
         capture_output=True, text=True,
     )
 
 
-def test_deploy_pulls_and_installs_with_the_previous_commit(repos, fake_sudo):
+def test_deploy_pulls_and_installs_with_the_previous_commit(repos, fake_sudo, funnel_env):
     _, sudo_log = fake_sudo
     previous = git(repos.prod, "rev-parse", "--short", "HEAD")
     commit_file(repos.dev, "app.txt", "new feature")
     git(repos.dev, "push", "-q", "origin", "main")
 
-    result = run_deploy(repos, fake_sudo)
+    result = run_deploy(repos, fake_sudo, funnel_env)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert git(repos.prod, "rev-parse", "HEAD") == git(repos.dev, "rev-parse", "HEAD")
     assert sudo_log.read_text().split() == [
         "bash", str(repos.prod / "deploy" / "macos" / "install.sh"), previous]
+    assert "Funnel 對外 DNS 正常" in result.stdout
+    assert "公網 DNS" not in result.stderr
 
 
-def test_deploy_stops_before_pull_when_preflight_blocks(repos, fake_sudo):
+def test_deploy_stops_before_pull_when_preflight_blocks(repos, fake_sudo, funnel_env):
     _, sudo_log = fake_sudo
     before = git(repos.prod, "rev-parse", "HEAD")
     commit_file(repos.dev, "app.txt", "new feature")
     git(repos.dev, "push", "-q", "origin", "main")
     (repos.prod / "ops.py").write_text("# hotfixed by hand\n")
 
-    result = run_deploy(repos, fake_sudo)
+    result = run_deploy(repos, fake_sudo, funnel_env)
 
     assert result.returncode != 0
     assert "擋下" in result.stderr
@@ -257,7 +272,7 @@ def test_deploy_stops_before_pull_when_preflight_blocks(repos, fake_sudo):
     assert not sudo_log.exists()
 
 
-def test_deploy_only_fast_forwards_production(repos, fake_sudo):
+def test_deploy_only_fast_forwards_production(repos, fake_sudo, funnel_env):
     _, sudo_log = fake_sudo
     commit_file(repos.dev, "app.txt", "new feature")
     git(repos.dev, "push", "-q", "origin", "main")
@@ -266,9 +281,35 @@ def test_deploy_only_fast_forwards_production(repos, fake_sudo):
     commit_file(repos.prod, "hotfix.txt", "committed by hand")
     diverged = git(repos.prod, "rev-parse", "HEAD")
 
-    result = run_deploy(repos, fake_sudo)
+    result = run_deploy(repos, fake_sudo, funnel_env)
 
     assert result.returncode != 0
     assert "尚未安裝" in result.stdout + result.stderr
     assert git(repos.prod, "rev-parse", "HEAD") == diverged
     assert not sudo_log.exists()
+
+
+def test_deploy_only_warns_when_funnel_is_missing_from_public_dns(repos, fake_sudo, dns_server):
+    _, sudo_log = fake_sudo
+    commit_file(repos.dev, "app.txt", "new feature")
+    git(repos.dev, "push", "-q", "origin", "main")
+
+    result = run_deploy(repos, fake_sudo, funnel_env_for(dns_server("nxdomain")))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sudo_log.exists()  # the install ran; the check comes after it
+    assert "公網 DNS 查不到 receipt.example.ts.net" in result.stderr
+    assert "tailscale funnel reset" in result.stderr
+
+
+def test_deploy_skips_the_funnel_check_when_install_fails(repos, fake_sudo, dns_server):
+    bin_dir, _ = fake_sudo
+    (bin_dir / "sudo").write_text("#!/bin/bash\nexit 1\n")
+    dns = dns_server("answer")
+    commit_file(repos.dev, "app.txt", "new feature")
+    git(repos.dev, "push", "-q", "origin", "main")
+
+    result = run_deploy(repos, fake_sudo, funnel_env_for(dns))
+
+    assert result.returncode != 0
+    assert dns.names == []
