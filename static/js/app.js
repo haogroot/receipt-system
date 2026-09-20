@@ -1269,6 +1269,7 @@ async function renderSettings(container) {
     const content = document.getElementById('settings-content');
 
     try {
+        await tripBasicSave;
         const trips = await api('/api/trips');
         window._trips = trips;
 
@@ -1371,9 +1372,12 @@ function renderTripEdit(content, trip) {
 
     content.innerHTML = `
         <button class="btn btn-secondary btn-sm" style="margin-bottom:16px" onclick="editingTripId=null;renderPage('settings')">← 返回旅程列表</button>
-        <div class="section-title">📝 編輯旅程：${trip.name}</div>
-        
-        <div class="card" style="margin-bottom:30px">
+        <div class="section-title section-title-status">
+            <span id="trip-edit-title">📝 編輯旅程：${trip.name}</span>
+            <span id="trip-basic-save-status" class="save-status">變更會自動儲存</span>
+        </div>
+
+        <div id="trip-basic-form" class="card" style="margin-bottom:30px">
             <div class="form-group">
                 <label class="form-label">旅程名稱</label>
                 <input id="edit-trip-name" class="form-input" value="${trip.name}">
@@ -1406,7 +1410,6 @@ function renderTripEdit(content, trip) {
                     </select>
                 </div>
             </div>
-            <button class="btn btn-primary btn-full" onclick="saveTripBasic(${trip.id})">儲存基本資料</button>
         </div>
 
         <div class="section-title">💳 付款方式管理 (僅此旅程)</div>
@@ -1455,15 +1458,16 @@ function renderTripEdit(content, trip) {
             </div>
         </div>
 
-        <div class="section-title cc-section-title">
+        <div class="section-title section-title-status">
             <span>💳 信用卡預算 (僅此旅程)</span>
-            <span id="cc-save-status" class="cc-save-status"></span>
+            <span id="cc-save-status" class="save-status">變更會自動儲存</span>
         </div>
         <div class="card" style="margin-bottom:30px">
             <div id="cc-budget-editor" class="cc-editor"></div>
         </div>
     `;
 
+    document.getElementById('trip-basic-form').addEventListener('change', () => autoSaveTripBasic(trip.id));
     initCcBudgetEditor(trip, tripComp, tripCc);
 }
 
@@ -1657,11 +1661,17 @@ function onCcEditorClick(e) {
     }
 }
 
-function setCcSaveStatus(state) {
-    const el = document.getElementById('cc-save-status');
+const SAVE_STATUS_TEXT = { saving: '儲存中…', saved: '✓ 已自動儲存', error: '儲存失敗，請再試一次' };
+
+function setSaveStatus(id, state, message) {
+    const el = document.getElementById(id);
     if (!el) return;
-    el.className = `cc-save-status ${state}`;
-    el.textContent = { saving: '儲存中…', saved: '✓ 已自動儲存', error: '儲存失敗，請再試一次' }[state] || '';
+    el.className = `save-status ${state}`;
+    el.textContent = message || SAVE_STATUS_TEXT[state] || '';
+}
+
+function setCcSaveStatus(state) {
+    setSaveStatus('cc-save-status', state);
 }
 
 function scheduleCcSave() {
@@ -1722,23 +1732,50 @@ async function createNewTrip() {
     } catch (err) {}
 }
 
-window.saveTripBasic = async function(tripId) {
-    try {
-        await api(`/api/trips/${tripId}`, {
-            method: 'PUT',
-            body: JSON.stringify({
-                name: document.getElementById('edit-trip-name').value.trim(),
-                start_date: document.getElementById('edit-trip-start').value || null,
-                end_date: document.getElementById('edit-trip-end').value || null,
-                budget_cash: parseFloat(document.getElementById('edit-trip-budget').value) || 0,
-                currency: document.getElementById('edit-trip-currency').value
-            })
-        });
-        showToast('旅程基本資料已更新', 'success');
-        renderPage('settings');
-        await updateGlobalsFromActiveTrip();
-    } catch(e) {}
-};
+// Saves are chained so an earlier, slower request can't overwrite a later one,
+// and renderSettings waits on the chain so a re-render never shows stale data.
+let tripBasicSave = Promise.resolve();
+let tripBasicPending = 0;
+
+function autoSaveTripBasic(tripId) {
+    const statusId = 'trip-basic-save-status';
+    const name = document.getElementById('edit-trip-name').value.trim();
+    const start = document.getElementById('edit-trip-start').value || null;
+    const end = document.getElementById('edit-trip-end').value || null;
+
+    if (!name) { setSaveStatus(statusId, 'error', '旅程名稱不可為空，尚未儲存'); return; }
+    if (start && end && end < start) { setSaveStatus(statusId, 'error', '結束日期不可早於開始日期，尚未儲存'); return; }
+
+    const body = {
+        name,
+        start_date: start,
+        end_date: end,
+        budget_cash: parseFloat(document.getElementById('edit-trip-budget').value) || 0,
+        currency: document.getElementById('edit-trip-currency').value,
+    };
+
+    tripBasicPending++;
+    setSaveStatus(statusId, 'saving');
+    tripBasicSave = tripBasicSave.then(async () => {
+        let ok = false;
+        try {
+            await api(`/api/trips/${tripId}`, { method: 'PUT', body: JSON.stringify(body) });
+            const trip = (window._trips || []).find(t => t.id === tripId);
+            if (trip) Object.assign(trip, body);
+            await updateGlobalsFromActiveTrip();
+            ok = true;
+        } catch (e) {}
+        tripBasicPending--;
+
+        if (editingTripId !== tripId) return;
+        if (ok) {
+            const title = document.getElementById('trip-edit-title');
+            if (title) title.textContent = `📝 編輯旅程：${name}`;
+        }
+        if (!ok) setSaveStatus(statusId, 'error');
+        else if (!tripBasicPending) setSaveStatus(statusId, 'saved');
+    });
+}
 
 window.addTripPaymentMethod = async function(tripId) {
     const trip = window._trips.find(t => t.id === tripId);

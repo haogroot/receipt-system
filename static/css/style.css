@@ -1590,23 +1590,24 @@ body {
     }
 }
 
-/* ─── Trip CC budget editor ─── */
-.cc-section-title {
+/* ─── Auto-save status (trip edit page) ─── */
+.section-title-status {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: baseline;
     gap: 8px;
 }
 
-.cc-save-status {
+.save-status {
     font-size: 0.75rem;
     font-weight: 400;
     color: var(--text-muted);
     white-space: nowrap;
 }
 
-.cc-save-status.saved { color: var(--accent-success, #10b981); }
-.cc-save-status.error { color: var(--accent-danger); }
+.save-status.saved { color: var(--accent-success, #10b981); }
+.save-status.error { color: var(--accent-danger); }
 
 .cc-editor {
     display: flex;
