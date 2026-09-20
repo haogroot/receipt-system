@@ -707,21 +707,23 @@ async function handleFileUpload(files) {
     }
 }
 
+// Card dropdown of the post-recognition preview; empty when the payer has no cards.
+function previewCardSelectHtml(receiptId, payer, selectedCard) {
+    const cards = getPayerCardNames(payer);
+    if (cards.length === 0) return '';
+    return `
+        <select id="preview-cc-name-${receiptId}" class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${receiptId}, this.value)">
+            <option value="">-- 指定信用卡 --</option>
+            ${cards.map(c => `<option value="${c}" ${selectedCard === c ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+    `;
+}
+
 function showReceiptPreview(data, file, activeTrip) {
     const previewArea = document.getElementById('upload-preview-area');
     const imgUrl = file ? URL.createObjectURL(file) : (data.image_path ? `/uploads/${data.image_path}` : '');
 
-    let ccOptionsHtml = '';
     const payer = data.paid_by || (COMPANIONS.length > 0 ? COMPANIONS[0] : '豪');
-    const payerCards = getPayerCardNames(payer);
-    if (payerCards.length > 0) {
-        ccOptionsHtml = `
-            <select id="preview-cc-name-${data.id}" class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${data.id}, this.value)">
-                <option value="">-- 指定信用卡 --</option>
-                ${payerCards.map(c => `<option value="${c}" ${data.credit_card_name === c ? 'selected' : ''}>${c}</option>`).join('')}
-            </select>
-        `;
-    }
 
     previewArea.innerHTML = `
         <div class="receipt-preview">
@@ -747,19 +749,19 @@ function showReceiptPreview(data, file, activeTrip) {
                     <span class="receipt-total-amount">${data.currency || '¥'} ${formatAmount(data.total_amount)} <small style="font-size: 0.7em; opacity: 0.8; font-weight: 500; margin-left: 4px;">(${formatTwd(data.total_amount)})</small></span>
                 </div>
                 <div class="receipt-meta" style="flex-wrap:wrap">
-                    <span class="receipt-tag payment" style="cursor:pointer" onclick="changePaymentMethod(${data.id}, '${data.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[data.payment_method] || data.payment_method}</span>
+                    <span class="receipt-tag payment" id="preview-pm-tag-${data.id}" style="cursor:pointer" onclick="changePaymentMethod(${data.id}, '${data.payment_method}')" title="點擊更改付款方式">${PAYMENT_LABELS[data.payment_method] || data.payment_method}</span>
                     <span class="receipt-tag category">${CATEGORY_EMOJI[data.category] || ''} ${data.category || '其他'}</span>
                     ${data.tax_free ? '<span class="receipt-tag tax-free">🛃 免稅後價格</span>' : ''}
                     <span class="receipt-tag">${data.currency || 'JPY'}</span>
                     ${data.credit_card_name ? `<span class="receipt-tag" style="background:var(--bg-card);border:1px solid currentColor">${data.credit_card_name}</span>` : ''}
                 </div>
                 <div style="padding:0 20px 12px">
-                   <select class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptPaidByAndCards(${data.id}, this.value, '${data.payment_method}')">
+                   <select id="preview-payer-${data.id}" class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptPaidByAndCards(${data.id}, this.value)">
                        <option value="">-- 由誰付款 --</option>
                        ${COMPANIONS.map(c => `<option value="${c}" ${payer === c ? 'selected' : ''}>${getCompanionIcon(c)} ${c}</option>`).join('')}
                    </select>
-                   <div id="preview-cc-container-${data.id}">
-                       ${data.payment_method === 'credit_card' ? ccOptionsHtml : ''}
+                   <div id="preview-cc-container-${data.id}" data-payment-method="${data.payment_method}" data-card-name="${data.credit_card_name || ''}">
+                       ${data.payment_method === 'credit_card' ? previewCardSelectHtml(data.id, payer, data.credit_card_name) : ''}
                    </div>
                 </div>
                 <div style="padding: 0 20px 12px">
@@ -1184,6 +1186,8 @@ window.updateReceiptCard = async function(receiptId, cardName) {
             body: JSON.stringify({ credit_card_name: cardName })
         });
         showToast('已更新信用卡', 'success');
+        const container = document.getElementById(`preview-cc-container-${receiptId}`);
+        if (container) container.dataset.cardName = cardName;
     } catch(e) {}
 };
 
@@ -1208,21 +1212,11 @@ window.updateReceiptPaidBy = async function(receiptId, paidBy) {
     } catch(e) {}
 };
 
-window.updateReceiptPaidByAndCards = async function(receiptId, paidBy, paymentMethod) {
+window.updateReceiptPaidByAndCards = async function(receiptId, paidBy) {
     await window.updateReceiptPaidBy(receiptId, paidBy);
     const container = document.getElementById(`preview-cc-container-${receiptId}`);
-    if (container && paymentMethod === 'credit_card') {
-        const payerCards = getPayerCardNames(paidBy);
-        if (payerCards.length > 0) {
-            container.innerHTML = `
-                <select id="preview-cc-name-${receiptId}" class="form-select" style="margin-top:8px;font-size:0.85rem;padding:4px 8px" onchange="updateReceiptCard(${receiptId}, this.value)">
-                    <option value="">-- 指定信用卡 --</option>
-                    ${payerCards.map(c => `<option value="${c}">${c}</option>`).join('')}
-                </select>
-            `;
-        } else {
-            container.innerHTML = '';
-        }
+    if (container && container.dataset.paymentMethod === 'credit_card') {
+        container.innerHTML = previewCardSelectHtml(receiptId, paidBy);
     }
 };
 
@@ -1254,11 +1248,24 @@ window.changePaymentMethod = function(receiptId, currentMethod) {
     `;
 };
 
-// The post-recognition preview is a snapshot of the upload response, so it goes
-// stale once the receipt is edited from elsewhere; redraw it from the server.
-async function refreshReceiptPreview(receiptId) {
-    if (!document.getElementById(`preview-cc-container-${receiptId}`)) return;
-    showReceiptPreview(await api(`/api/receipts/${receiptId}`), null);
+// The post-recognition preview is drawn once from the upload response, so after
+// the payment method changes we patch it in place; redrawing would reload the photo.
+function syncPreviewPaymentMethod(receiptId, pmId) {
+    const container = document.getElementById(`preview-cc-container-${receiptId}`);
+    if (!container) return;
+
+    const select = container.querySelector('select');
+    if (select) container.dataset.cardName = select.value;
+    container.dataset.paymentMethod = pmId;
+
+    const tag = document.getElementById(`preview-pm-tag-${receiptId}`);
+    tag.textContent = PAYMENT_LABELS[pmId] || pmId;
+    tag.setAttribute('onclick', `changePaymentMethod(${receiptId}, '${pmId}')`);
+
+    const payer = document.getElementById(`preview-payer-${receiptId}`).value;
+    container.innerHTML = pmId === 'credit_card'
+        ? previewCardSelectHtml(receiptId, payer, container.dataset.cardName)
+        : '';
 }
 
 window.updateTaxFree = async function(receiptId, taxFree) {
@@ -1288,7 +1295,7 @@ window.updatePaymentMethod = async function(receiptId, pmId) {
         if (!rModal.classList.contains('hidden')) {
             showReceiptDetail(receiptId);
         }
-        await refreshReceiptPreview(receiptId);
+        syncPreviewPaymentMethod(receiptId, pmId);
     } catch(e) {}
 };
 
