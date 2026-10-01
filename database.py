@@ -59,6 +59,13 @@ def init_db():
             amount REAL
         );
 
+        CREATE TABLE IF NOT EXISTS receipt_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_id INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+            image_path TEXT NOT NULL,
+            position INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -282,7 +289,8 @@ def update_trip(trip_id, **kwargs):
 # ─── Receipt Operations ───
 
 def create_receipt(trip_id, store_name, date, total_amount, currency, payment_method,
-                   category, image_path, raw_json, items, note="", credit_card_name="", paid_by="豪", tax_free=False):
+                   category, image_path, raw_json, items, note="", credit_card_name="", paid_by="豪", tax_free=False,
+                   image_paths=None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
@@ -301,6 +309,13 @@ def create_receipt(trip_id, store_name, date, total_amount, currency, payment_me
             (receipt_id, item.get("name", ""), item.get("quantity", 1),
              item.get("unit_price", 0), item.get("amount", 0)),
         )
+
+    if image_paths:
+        for position, path in enumerate(image_paths):
+            cursor.execute(
+                "INSERT INTO receipt_images (receipt_id, image_path, position) VALUES (?, ?, ?)",
+                (receipt_id, path, position),
+            )
 
     conn.commit()
     conn.close()
@@ -347,6 +362,12 @@ def get_receipt(receipt_id):
         "SELECT * FROM receipt_items WHERE receipt_id = ?", (receipt_id,)
     ).fetchall()
     rd["items"] = [dict(i) for i in items]
+    images = conn.execute(
+        "SELECT image_path FROM receipt_images WHERE receipt_id = ? ORDER BY position, id",
+        (receipt_id,),
+    ).fetchall()
+    legacy_image = rd.get("image_path")
+    rd["image_paths"] = [image["image_path"] for image in images] or ([legacy_image] if legacy_image else [])
     conn.close()
     return rd
 

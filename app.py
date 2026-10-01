@@ -1,13 +1,16 @@
 import os
 import uuid
+import json
+import math
 from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.exceptions import RequestEntityTooLarge
 from config import Config
 from database import (
     init_db, create_trip, get_trips, get_active_trip, update_trip,
     create_receipt, get_receipts, get_receipt, update_receipt, delete_receipt,
     get_dashboard_data, get_stats_data, get_setting, update_setting
 )
-from receipt_processor import process_receipt_image
+from receipt_processor import process_receipt_image, process_receipt_images
 from auth import init_auth
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -18,6 +21,11 @@ app.config.from_object(Config)
 init_auth(app)
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+
+
+@app.errorhandler(413)
+def upload_too_large(_error):
+    return jsonify({"error": "照片檔案太大，請縮小後再上傳"}), 413
 
 
 # ─── Health Check (public) ───
@@ -119,6 +127,92 @@ def upload_only():
         return jsonify({"error": str(e)}), 500
 
 
+def _read_long_receipt_images():
+    """Read ordered photos without changing the ordinary upload limit."""
+    request.max_content_length = 50 * 1024 * 1024
+    files = request.files.getlist("images")
+    if not 2 <= len(files) <= 8:
+        raise ValueError("長收據請上傳 2 至 8 張照片")
+
+    mime_map = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+        "webp": "image/webp", "heic": "image/heic",
+    }
+    images = []
+    for file in files:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+        if ext not in mime_map:
+            raise ValueError("請上傳 JPG、PNG、WebP 或 HEIC 照片")
+        data = file.read(10 * 1024 * 1024 + 1)
+        if not data or len(data) > 10 * 1024 * 1024:
+            raise ValueError("每張照片須小於 10 MB")
+        images.append((data, mime_map[ext], ext))
+    return images
+
+
+@app.route("/api/receipts/long/recognize", methods=["POST"])
+def recognize_long_receipt():
+    try:
+        images = _read_long_receipt_images()
+        result = process_receipt_images([(data, mime) for data, mime, _ in images])
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except RequestEntityTooLarge:
+        raise
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/receipts/long/confirm", methods=["POST"])
+def confirm_long_receipt():
+    try:
+        images = _read_long_receipt_images()
+        data = json.loads(request.form.get("receipt", ""))
+        if not isinstance(data, dict) or not data.get("store_name") or not data.get("date"):
+            raise ValueError("請填寫店家與日期")
+        if not isinstance(data.get("items"), list) or any(not isinstance(item, dict) for item in data["items"]):
+            raise ValueError("品項資料格式不正確")
+        total_amount = float(data.get("total_amount", 0))
+        if not math.isfinite(total_amount) or total_amount < 0:
+            raise ValueError("請填寫有效的實付總額")
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e) or "收據資料格式不正確"}), 400
+
+    paths = []
+    try:
+        for image_data, _mime, ext in images:
+            filename = f"{uuid.uuid4().hex}.{ext}"
+            with open(os.path.join(Config.UPLOAD_FOLDER, filename), "wb") as output:
+                output.write(image_data)
+            paths.append(filename)
+
+        trip = get_active_trip()
+        receipt_id = create_receipt(
+            trip_id=trip["id"] if trip else None,
+            store_name=data["store_name"],
+            date=data["date"],
+            total_amount=total_amount,
+            currency=data.get("currency", "JPY"),
+            payment_method=data.get("payment_method", "cash"),
+            category=data.get("category", "其他"),
+            image_path=paths[0],
+            image_paths=paths,
+            raw_json=data,
+            items=data["items"],
+            note=data.get("note", ""),
+            credit_card_name=data.get("credit_card_name", ""),
+            paid_by=data.get("paid_by", "豪"),
+            tax_free=data.get("tax_free", False),
+        )
+    except Exception as e:
+        for path in paths:
+            os.remove(os.path.join(Config.UPLOAD_FOLDER, path))
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({**data, "id": receipt_id, "image_path": paths[0], "image_paths": paths}), 201
+
+
 @app.route("/api/receipts/confirm", methods=["POST"])
 def confirm_receipt():
     """Confirm and save a previously OCR'd receipt."""
@@ -184,9 +278,9 @@ def delete_receipt_api(receipt_id):
     if not receipt:
         return jsonify({"error": "Receipt not found"}), 404
 
-    # Delete image file
-    if receipt.get("image_path"):
-        img_path = os.path.join(Config.UPLOAD_FOLDER, receipt["image_path"])
+    # Remove every section of a long receipt (or the one legacy photo).
+    for image_path in receipt["image_paths"]:
+        img_path = os.path.join(Config.UPLOAD_FOLDER, image_path)
         if os.path.exists(img_path):
             os.remove(img_path)
 

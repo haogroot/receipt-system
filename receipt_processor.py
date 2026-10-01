@@ -1,6 +1,8 @@
 import json
 import re
 import base64
+import io
+from PIL import Image, ImageOps, UnidentifiedImageError
 from google import genai
 from config import Config
 
@@ -57,6 +59,13 @@ RECEIPT_PROMPT = """你是一位專業的發票與收據處理專家。請精準
 
 請辨識以下收據圖片："""
 
+LONG_RECEIPT_PROMPT = RECEIPT_PROMPT + """
+
+以下多張照片是同一張長收據，依照收據從上到下的順序排列。請合併成一筆收據資料。
+相鄰照片有重疊區域，同一行品項只計算一次；不同位置的同名品項仍是不同購買紀錄。
+優先採用收據底部印出的實付總額，不要把每張照片各自的金額加總。
+如果文字不清楚，請只根據看得見的內容辨識，不要憑空補出品項。"""
+
 
 def process_receipt_image(image_data: bytes, mime_type: str = "image/jpeg") -> dict:
     """
@@ -96,6 +105,48 @@ def process_receipt_image(image_data: bytes, mime_type: str = "image/jpeg") -> d
     parsed = _normalize_receipt(parsed)
 
     return parsed
+
+
+def process_receipt_images(images: list[tuple[bytes, str]]) -> dict:
+    """Recognize ordered photos of one receipt in a single Gemini request."""
+    parts = [{"text": LONG_RECEIPT_PROMPT}]
+    total_bytes = 0
+    for index, (data, mime_type) in enumerate(images, start=1):
+        data, mime_type = _prepare_long_receipt_image(data, mime_type)
+        total_bytes += len(data)
+        if total_bytes > 14 * 1024 * 1024:
+            raise ValueError("照片合計太大，請縮小照片後再試")
+        parts.extend([
+            {"text": f"第 {index} 段（由上往下）"},
+            {"inline_data": {
+                "mime_type": mime_type,
+                "data": base64.standard_b64encode(data).decode("utf-8"),
+            }},
+        ])
+
+    client = genai.Client(api_key=Config.GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=Config.GEMINI_MODEL,
+        contents=[{"role": "user", "parts": parts}],
+    )
+    return _normalize_receipt(_parse_json_response(response.text.strip()))
+
+
+def _prepare_long_receipt_image(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    """Keep small JPEGs intact; resize large sections for the inline request."""
+    if mime_type == "image/jpeg" and len(data) <= 2 * 1024 * 1024:
+        return data, mime_type
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((2500, 2500))
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            return output.getvalue(), "image/jpeg"
+    except (UnidentifiedImageError, OSError):
+        # Some platforms produce HEIC files that Pillow cannot decode. Gemini
+        # can receive their original bytes through the existing upload path.
+        return data, mime_type
 
 
 def _parse_json_response(text: str) -> dict:

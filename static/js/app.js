@@ -405,6 +405,10 @@ async function renderDashboard(container) {
 //  UPLOAD PAGE (with tab toggle: upload vs manual)
 // ═══════════════════════════════════════════════
 let uploadActiveTab = 'upload'; // 'upload' | 'manual'
+let longReceiptMode = false;
+let longReceiptPhotos = [];
+let longReceiptResult = null;
+let longReceiptBusy = false;
 
 function renderUpload(container) {
     container.innerHTML = `
@@ -441,6 +445,10 @@ function renderUploadTabContent() {
     if (!content) return;
 
     if (uploadActiveTab === 'upload') {
+        if (longReceiptMode) {
+            renderLongReceiptContent(content);
+            return;
+        }
         content.innerHTML = `
             <div class="upload-area" id="upload-drop-zone">
                 <span class="upload-icon">📸</span>
@@ -457,6 +465,10 @@ function renderUploadTabContent() {
                     </label>
                 </div>
             </div>
+            <button type="button" class="long-receipt-entry" onclick="openLongReceipt()">
+                <span>🧾 收據太長？分段拍攝</span>
+                <small>多張照片合併辨識為一筆收據 →</small>
+            </button>
         `;
 
         const cameraInput = document.getElementById('camera-input');
@@ -480,6 +492,246 @@ function renderUploadTabContent() {
         renderManualEntryForm(content);
     }
 }
+
+window.openLongReceipt = function() {
+    longReceiptMode = true;
+    document.getElementById('upload-preview-area').innerHTML = '';
+    renderUploadTabContent();
+};
+
+function clearLongReceiptPhotos() {
+    longReceiptPhotos.forEach(photo => URL.revokeObjectURL(photo.url));
+    longReceiptPhotos = [];
+    longReceiptResult = null;
+}
+
+window.closeLongReceipt = function() {
+    if (longReceiptPhotos.length && !confirm('要放棄已拍攝的長收據照片嗎？')) return;
+    clearLongReceiptPhotos();
+    longReceiptMode = false;
+    renderUploadTabContent();
+};
+
+function longReceiptPhotoHtml(photo, index, editable) {
+    return `
+        <div class="long-photo-row">
+            <a href="${photo.url}" target="_blank" rel="noopener" aria-label="查看第 ${index + 1} 段完整照片"><img src="${photo.url}" alt="第 ${index + 1} 段收據照片"></a>
+            <div class="long-photo-info">
+                <strong>第 ${index + 1} 段</strong>
+                <small>${escapeHtml(photo.file.name)}</small>
+            </div>
+            ${editable ? `<div class="long-photo-controls">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="moveLongReceiptPhoto(${index}, -1)" ${index === 0 ? 'disabled' : ''} aria-label="第 ${index + 1} 段上移">↑</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="moveLongReceiptPhoto(${index}, 1)" ${index === longReceiptPhotos.length - 1 ? 'disabled' : ''} aria-label="第 ${index + 1} 段下移">↓</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="removeLongReceiptPhoto(${index})" aria-label="刪除第 ${index + 1} 段">刪除</button>
+            </div>` : ''}
+        </div>`;
+}
+
+function longReceiptItemHtml(item = {}, index = 0) {
+    return `
+        <div class="long-item-row">
+            <div class="long-item-heading"><strong>品項 ${index + 1}</strong><button type="button" class="btn btn-secondary btn-sm" onclick="removeLongReceiptItem(this)">刪除</button></div>
+            <input class="form-input long-item-name" aria-label="品項名稱" placeholder="品項名稱" value="${escapeHtml(item.name || '')}">
+            <div class="long-item-numbers">
+                <label>數量<input class="form-input long-item-quantity" type="number" min="1" step="1" value="${escapeHtml(item.quantity ?? 1)}"></label>
+                <label>單價<input class="form-input long-item-unit-price" type="number" min="0" step="0.01" value="${escapeHtml(item.unit_price ?? 0)}"></label>
+                <label>金額<input class="form-input long-item-amount" type="number" min="0" step="0.01" value="${escapeHtml(item.amount ?? 0)}"></label>
+            </div>
+        </div>`;
+}
+
+function renderLongReceiptContent(content) {
+    const reviewing = !!longReceiptResult;
+    const data = longReceiptResult || {};
+    const categories = ['餐飲', '交通', '購物', '住宿', '娛樂', '其他'];
+    content.innerHTML = `
+        <div class="long-receipt-panel">
+            <div class="long-receipt-header">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="closeLongReceipt()">← 一般上傳</button>
+                <h2>長收據・分段拍攝</h2>
+            </div>
+            <p class="long-receipt-hint">從收據頂端往下拍，相鄰照片保留少量重疊。下方順序就是 AI 辨識的順序。</p>
+            <div class="long-photo-list">${longReceiptPhotos.map((photo, index) => longReceiptPhotoHtml(photo, index, !reviewing)).join('')}</div>
+            ${reviewing ? `
+                <button type="button" class="btn btn-secondary btn-full" onclick="retryLongReceiptPhotos()">調整照片並重新辨識</button>
+                <div class="long-review">
+                    <h3>核對辨識結果</h3>
+                    <p class="long-receipt-hint">確認品項與實付總額後，再儲存為一筆收據。</p>
+                    <div class="form-group"><label class="form-label" for="long-store">店家名稱</label><input id="long-store" class="form-input" value="${escapeHtml(data.store_name || '')}"></div>
+                    <div class="form-row">
+                        <div class="form-group"><label class="form-label" for="long-date">日期</label><input id="long-date" class="form-input" type="date" value="${escapeHtml(data.date || '')}"></div>
+                        <div class="form-group"><label class="form-label" for="long-total">實付總額</label><input id="long-total" class="form-input" type="number" min="0" step="0.01" value="${escapeHtml(data.total_amount ?? 0)}"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label class="form-label" for="long-currency">幣別</label><input id="long-currency" class="form-input" maxlength="3" value="${escapeHtml(data.currency || 'JPY')}"></div>
+                        <div class="form-group"><label class="form-label" for="long-category">類別</label><select id="long-category" class="form-select">${categories.map(category => `<option value="${category}" ${category === data.category ? 'selected' : ''}>${category}</option>`).join('')}</select></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label class="form-label" for="long-payment">付款方式</label><select id="long-payment" class="form-select">${PAYMENT_METHODS.map(pm => `<option value="${escapeHtml(pm.id)}" ${pm.id === data.payment_method ? 'selected' : ''}>${escapeHtml(pm.label)}</option>`).join('')}</select></div>
+                        <div class="form-group"><label class="form-label" for="long-payer">付款者</label><select id="long-payer" class="form-select">${COMPANIONS.map(payer => `<option value="${escapeHtml(payer)}" ${payer === data.paid_by ? 'selected' : ''}>${escapeHtml(payer)}</option>`).join('')}</select></div>
+                    </div>
+                    <label class="long-tax-free"><input id="long-tax-free" type="checkbox" ${data.tax_free ? 'checked' : ''}> 收據金額已免稅</label>
+                    <h3>品項</h3>
+                    <div id="long-items">${(data.items || []).map((item, index) => longReceiptItemHtml(item, index)).join('')}</div>
+                    <button type="button" class="btn btn-secondary btn-full" onclick="addLongReceiptItem()">＋ 新增品項</button>
+                    <button type="button" class="btn btn-primary btn-full long-save" onclick="saveLongReceipt()">確認並儲存為一筆收據</button>
+                </div>` : `
+                <div class="long-photo-actions">
+                    <label class="btn btn-primary">📷 拍下一段<input type="file" accept="image/*" capture="environment" class="upload-input" id="long-camera-input"></label>
+                    <label class="btn btn-secondary">📁 從相簿加入<input type="file" accept="image/*" multiple class="upload-input" id="long-file-input"></label>
+                </div>
+                <button type="button" class="btn btn-primary btn-full long-recognize" onclick="recognizeLongReceipt()" ${longReceiptPhotos.length < 2 ? 'disabled' : ''}>辨識為一張收據（${longReceiptPhotos.length} 張照片）</button>
+                <p class="long-receipt-hint">請加入 2 至 8 張照片，按上方順序一起辨識。</p>`}
+        </div>`;
+
+    if (!reviewing) {
+        for (const id of ['long-camera-input', 'long-file-input']) {
+            document.getElementById(id).addEventListener('change', event => {
+                addLongReceiptPhotos(event.target.files);
+                event.target.value = '';
+            });
+        }
+    } else {
+        const review = content.querySelector('.long-review');
+        review.addEventListener('input', captureLongReceiptDraft);
+        review.addEventListener('change', captureLongReceiptDraft);
+    }
+}
+
+function captureLongReceiptDraft() {
+    if (!longReceiptResult || !document.getElementById('long-store')) return;
+    Object.assign(longReceiptResult, {
+        store_name: document.getElementById('long-store').value,
+        date: document.getElementById('long-date').value,
+        total_amount: document.getElementById('long-total').value,
+        currency: document.getElementById('long-currency').value,
+        category: document.getElementById('long-category').value,
+        payment_method: document.getElementById('long-payment').value,
+        paid_by: document.getElementById('long-payer').value,
+        tax_free: document.getElementById('long-tax-free').checked,
+        items: [...document.querySelectorAll('#long-items .long-item-row')].map(row => ({
+            name: row.querySelector('.long-item-name').value,
+            quantity: row.querySelector('.long-item-quantity').value,
+            unit_price: row.querySelector('.long-item-unit-price').value,
+            amount: row.querySelector('.long-item-amount').value,
+        })),
+    });
+}
+
+function addLongReceiptPhotos(files) {
+    for (const file of files) {
+        if (longReceiptPhotos.length >= 8) { showToast('一張長收據最多 8 張照片', 'error'); break; }
+        if (!file.type.startsWith('image/')) { showToast('請選擇照片檔案', 'error'); continue; }
+        if (file.size > 10 * 1024 * 1024) { showToast('每張照片須小於 10 MB', 'error'); continue; }
+        const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+        const typeExt = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic' }[file.type];
+        if (!['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(ext) && !typeExt) { showToast('請選擇 JPG、PNG、WebP 或 HEIC 照片', 'error'); continue; }
+        if (longReceiptPhotos.reduce((size, photo) => size + photo.file.size, 0) + file.size > 48 * 1024 * 1024) {
+            showToast('照片合計須小於 48 MB', 'error'); continue;
+        }
+        const uploadFile = ext ? file : new File([file], `receipt-${longReceiptPhotos.length + 1}.${typeExt}`, { type: file.type });
+        longReceiptPhotos.push({ file: uploadFile, url: URL.createObjectURL(uploadFile) });
+    }
+    renderUploadTabContent();
+}
+
+window.moveLongReceiptPhoto = function(index, direction) {
+    const other = index + direction;
+    if (other < 0 || other >= longReceiptPhotos.length) return;
+    [longReceiptPhotos[index], longReceiptPhotos[other]] = [longReceiptPhotos[other], longReceiptPhotos[index]];
+    renderUploadTabContent();
+};
+
+window.removeLongReceiptPhoto = function(index) {
+    const [removed] = longReceiptPhotos.splice(index, 1);
+    if (removed) URL.revokeObjectURL(removed.url);
+    renderUploadTabContent();
+};
+
+window.retryLongReceiptPhotos = function() {
+    longReceiptResult = null;
+    renderUploadTabContent();
+};
+
+window.addLongReceiptItem = function() {
+    const items = document.getElementById('long-items');
+    items.insertAdjacentHTML('beforeend', longReceiptItemHtml({}, items.children.length));
+    captureLongReceiptDraft();
+};
+
+window.removeLongReceiptItem = function(button) {
+    button.closest('.long-item-row').remove();
+    captureLongReceiptDraft();
+};
+
+window.recognizeLongReceipt = async function() {
+    if (longReceiptBusy || longReceiptPhotos.length < 2) return;
+    longReceiptBusy = true;
+    showLoading('辨識整張長收據中...');
+    const form = new FormData();
+    longReceiptPhotos.forEach(photo => form.append('images', photo.file));
+    try {
+        longReceiptResult = await apiUpload('/api/receipts/long/recognize', form);
+        renderUploadTabContent();
+    } catch (err) {
+        // Keep the photos so the user can retry or adjust them.
+    } finally {
+        hideLoading();
+        longReceiptBusy = false;
+    }
+};
+
+window.saveLongReceipt = async function() {
+    if (longReceiptBusy) return;
+    const totalValue = document.getElementById('long-total').value;
+    const total = Number(totalValue);
+    const itemRows = [...document.querySelectorAll('#long-items .long-item-row')];
+    if (itemRows.some(row => ['.long-item-quantity', '.long-item-unit-price', '.long-item-amount'].some(selector => !row.querySelector(selector).value))) {
+        showToast('請填寫每個品項的數量與金額', 'error'); return;
+    }
+    const items = itemRows.map(row => ({
+        name: row.querySelector('.long-item-name').value.trim(),
+        quantity: Number(row.querySelector('.long-item-quantity').value),
+        unit_price: Number(row.querySelector('.long-item-unit-price').value),
+        amount: Number(row.querySelector('.long-item-amount').value),
+    }));
+    const receipt = {
+        store_name: document.getElementById('long-store').value.trim(),
+        date: document.getElementById('long-date').value,
+        total_amount: total,
+        currency: document.getElementById('long-currency').value.trim().toUpperCase(),
+        category: document.getElementById('long-category').value,
+        payment_method: document.getElementById('long-payment').value,
+        paid_by: document.getElementById('long-payer').value,
+        tax_free: document.getElementById('long-tax-free').checked,
+        items,
+    };
+    if (!receipt.store_name || !receipt.date || !receipt.currency) { showToast('請填寫店家、日期與幣別', 'error'); return; }
+    if (!totalValue || !Number.isFinite(total) || total < 0) { showToast('請確認實付總額', 'error'); return; }
+    if (items.some(item => !item.name || !Number.isInteger(item.quantity) || item.quantity < 1 || !Number.isFinite(item.unit_price) || item.unit_price < 0 || !Number.isFinite(item.amount) || item.amount < 0)) {
+        showToast('請確認每個品項的名稱與金額', 'error'); return;
+    }
+
+    longReceiptBusy = true;
+    showLoading('儲存長收據中...');
+    const form = new FormData();
+    form.append('receipt', JSON.stringify(receipt));
+    longReceiptPhotos.forEach(photo => form.append('images', photo.file));
+    try {
+        const saved = await apiUpload('/api/receipts/long/confirm', form);
+        clearLongReceiptPhotos();
+        longReceiptMode = false;
+        renderUploadTabContent();
+        showReceiptPreview(saved, null, null);
+        showToast('長收據已儲存為一筆！', 'success');
+    } catch (err) {
+        // Keep the review form so a failed upload can be retried.
+    } finally {
+        hideLoading();
+        longReceiptBusy = false;
+    }
+};
 
 function renderManualEntryForm(container) {
     const today = new Date().toISOString().slice(0, 10);
@@ -722,13 +974,17 @@ function previewCardSelectHtml(receiptId, payer, selectedCard) {
 function showReceiptPreview(data, file, activeTrip) {
     const previewArea = document.getElementById('upload-preview-area');
     const imgUrl = file ? URL.createObjectURL(file) : (data.image_path ? `/uploads/${data.image_path}` : '');
+    const imagePaths = data.image_paths || [];
+    const photoHtml = imagePaths.length > 1
+        ? `<div class="receipt-photo-gallery">${imagePaths.map((path, index) => `<a href="/uploads/${path}" target="_blank" rel="noopener"><img src="/uploads/${path}" class="image-preview" alt="收據第 ${index + 1} 段"></a>`).join('')}</div>`
+        : (imgUrl ? `<img src="${imgUrl}" class="image-preview" alt="receipt">` : '');
 
     const payer = data.paid_by || (COMPANIONS.length > 0 ? COMPANIONS[0] : '豪');
 
     previewArea.innerHTML = `
         <div class="receipt-preview">
             <div class="receipt-preview-card">
-                ${imgUrl ? `<img src="${imgUrl}" class="image-preview" alt="receipt">` : ''}
+                ${photoHtml}
                 <div class="receipt-preview-header">
                     <div>
                         <div class="receipt-store">${data.store_name || '未知店家'}</div>
@@ -1151,7 +1407,9 @@ async function showReceiptDetail(receiptId) {
             </div>
             ${r.image_path ? `
                 <button type="button" class="btn btn-secondary btn-full" style="margin-top:16px" onclick="toggleReceiptPhoto(this)">📷 查看收據照片</button>
-                <img data-src="/uploads/${r.image_path}" class="image-preview hidden" style="margin:16px 0 0" alt="receipt">
+                <div class="receipt-photo-gallery hidden" style="margin:16px 0 0">
+                    ${(r.image_paths || [r.image_path]).map((path, index) => `<a href="/uploads/${path}" target="_blank" rel="noopener"><img data-src="/uploads/${path}" class="image-preview" alt="收據第 ${index + 1} 段"></a>`).join('')}
+                </div>
             ` : ''}
         `;
     } catch (err) {
@@ -1160,9 +1418,11 @@ async function showReceiptDetail(receiptId) {
 }
 
 window.toggleReceiptPhoto = function(btn) {
-    const img = btn.nextElementSibling;
-    if (!img.src) img.src = img.dataset.src;
-    const show = img.classList.toggle('hidden') === false;
+    const gallery = btn.nextElementSibling;
+    gallery.querySelectorAll('img[data-src]').forEach(img => {
+        if (!img.src) img.src = img.dataset.src;
+    });
+    const show = gallery.classList.toggle('hidden') === false;
     btn.textContent = show ? '🙈 隱藏收據照片' : '📷 查看收據照片';
 };
 
